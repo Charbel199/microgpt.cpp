@@ -1,10 +1,25 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include <set>
 #include <unordered_set>
 #include <algorithm>
 #include <functional>
+#include <random>
+#include <fstream>
+#include <string>
+#include <filesystem>
+#include <cstdlib>
+#define LOG(msg) std::cerr << "[LOG] " << msg << std::endl
 
+// defining our model params
+constexpr int N_LAYER = 1;
+constexpr int N_EMBD = 16;
+constexpr int BLOCK_SIZE = 4;
+constexpr int N_HEAD = 4;
+constexpr int HEAD_DIM = N_EMBD / N_HEAD;
+
+std::mt19937 rng(42); //random seed
 using data_T = double;
 using grad_T = double;
 struct Value {
@@ -106,11 +121,72 @@ struct Value {
 
     }
 };
+struct Matrix {
+    std::vector<data_T> data;
+    int rows, cols;
 
+    Matrix(int rows, int cols, float std=0.08) : data(rows * cols), rows(rows), cols(cols) {
+        std::normal_distribution<data_T> dist(0.0, std);
+        for (auto&v : data) v = dist(rng);
+    }
+
+    data_T& operator()(int i, int j) { return data[i * cols + j]; }
+    const data_T& operator()(int i, int j) const { return data[i * cols + j]; }
+};
+
+struct Layer {
+    Matrix attn_wq, attn_wk, attn_wv, attn_wo;
+    Matrix mlp_fc1, mlp_fc2;
+};
+
+struct Model {
+    Matrix wte, wpe, lm_head;
+    std::vector<Layer> layers;
+};
 
 int main() {
     std::cout << "Hello, MicroGPT!" << std::endl;
 
+    if (!std::filesystem::exists("input.txt")){
+        LOG("Downloading input.txt ...");
+        system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt");
+    }
+    std::vector<std::string> docs;
+    std::ifstream file("input.txt");
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty()) docs.push_back(line);
+    } 
+    std::shuffle(docs.begin(), docs.end(), rng);
+    LOG("We have "<<docs.size()<<" names.");
+    std::set<char> uchars{};
+    for (auto& name: docs){
+        uchars.insert(name.begin(), name.end());
+    }
+    int BOS = uchars.size(); // token id for a special Beginning of Sequence (BOS) token
+    int vocab_size = uchars.size()+1;
+    LOG("Vocab size is: "<<vocab_size);
+    
+    
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     Value a(2.0);
     Value b(3.0);
 
