@@ -18,6 +18,7 @@ constexpr int N_EMBD = 16;
 constexpr int BLOCK_SIZE = 4;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
+using KVCache = std::vector<std::vector<std::vector<Value>>>;
 
 std::mt19937 rng(42); //random seed
 using data_T = double;
@@ -139,6 +140,11 @@ struct Matrix {
         for (auto&v : data) v = Value(dist(rng));
     }
 
+    std::vector<Value> row(int i) {
+        auto start = data.begin() + i * cols;
+        return std::vector<Value>(start, start + cols);
+    }
+
     Value& operator()(int i, int j) { return data[i * cols + j]; }
     const Value& operator()(int i, int j) const { return data[i * cols + j]; }
 };
@@ -229,6 +235,67 @@ std::vector<Value> rmsnorm(const std::vector<Value>& x){
     return out;
 }
 
+
+std::vector<Value> gpt(
+    const int token_id, 
+    const int pos_id,
+    KVCache& keys,
+    KVCache& values,
+    Model& state_dict){
+        std::vector<Value> x; // joint token and position embedding
+        for (int j=0;j<state_dict.wte.cols;j++){
+            x.push_back(state_dict.wte(token_id, j)+state_dict.wpe(pos_id, j));
+        }
+        x = rmsnorm(x);
+
+        for (int li=0; li<N_LAYER;li++){
+            // 1. Multi-Head attention
+            std::vector<Value> x_residual = x;
+            x = rmsnorm(x);
+            std::vector<Value> q = linear(x, state_dict.layers[li].attn_wq);
+            std::vector<Value> k = linear(x, state_dict.layers[li].attn_wk);
+            std::vector<Value> v = linear(x, state_dict.layers[li].attn_wv);
+            keys[li].push_back(k);
+            values[li].push_back(v);
+            
+
+            std::vector<Value> x_attn;
+            for(int h=0;h<N_HEAD;h++){
+                int hs = h*HEAD_DIM;
+                std::vector<Value> q_h(q.begin() + hs, q.begin() + hs + HEAD_DIM);
+                std::vector<std::vector<Value>> k_h, v_h;
+                for (int t = 0; t < keys[li].size(); t++) {
+                    k_h.emplace_back(keys[li][t].begin() + hs, keys[li][t].begin() + hs + HEAD_DIM);
+                    v_h.emplace_back(values[li][t].begin() + hs, values[li][t].begin() + hs + HEAD_DIM);
+                }
+                std::vector<Value> attn_logits;
+                for (int t=0;t<k_h.size();t++){
+                    Value sum;
+                    for (int j=0;j<HEAD_DIM;j++){
+                        sum+=q_h[j]*k_h[t][j];
+                    }
+                    attn_logits.push_back(sum/std::pow(HEAD_DIM,0.5));
+                }
+                
+                std::vector<Value> attn_weights = softmax(attn_logits);
+                
+                std::vector<Value> head_out;
+                for (int j=0;j<HEAD_DIM;j++){
+                    Value sum;
+                    for (int t=0;t<v_h.size();t++){
+                        sum+=attn_weights[t]*v_h[t][j];
+                    }
+                    head_out.push_back(sum);
+                }
+
+                x_attn.insert(x_attn.end(), head_out.begin(), head_out.end()); //extend
+            }
+
+            
+
+            // 2. MLP block
+        }
+}
 
 
 
