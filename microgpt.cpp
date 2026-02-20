@@ -79,6 +79,13 @@ struct Value {
     Value operator/(const Value& other) const {
         return *this * other.pow(-1);
     }
+    Value& operator+=(const Value& other) {
+        *this = *this + other;
+        return *this;
+    }
+    bool operator<(const Value& other) const { return data < other.data; }
+    bool operator>(const Value& other) const { return data > other.data; }
+
     /**
     def backward(self):
         topo = []
@@ -135,7 +142,6 @@ struct Matrix {
     Value& operator()(int i, int j) { return data[i * cols + j]; }
     const Value& operator()(int i, int j) const { return data[i * cols + j]; }
 };
-
 struct Layer {
     Matrix attn_wq, attn_wk, attn_wv, attn_wo;
     Matrix mlp_fc1, mlp_fc2;
@@ -149,7 +155,6 @@ struct Layer {
         mlp_fc2(n_embd, 4 * n_embd)
     {}
 };
-
 struct Model {
     Matrix wte, wpe, lm_head;
     std::vector<Layer> layers;
@@ -184,6 +189,48 @@ struct Model {
         return p;
     }
 };
+
+
+// matrix * vector 
+std::vector<Value> linear(const std::vector<Value>& x, Matrix& w){
+    std::vector<Value> out;
+    for(int i=0; i<w.rows;i++){
+        Value sum;
+        for(int j=0; j<w.cols;j++){
+            sum+=w(i,j)*x[j];
+        }
+        out.push_back(sum);
+    }
+    return out;
+}
+
+std::vector<Value> softmax(const std::vector<Value>& logits){
+    auto max_it = std::max_element(logits.begin(), logits.end());
+    data_T max_val = max_it->data;
+    std::vector<Value> exps;
+    for (auto& val : logits){
+        exps.push_back((val-max_val).exp());
+    }
+    Value total;
+    for (auto& v : exps) total += v;
+    std::vector<Value> out;
+    for (auto& v : exps) out.push_back(v/total);
+    return out;
+}
+
+
+std::vector<Value> rmsnorm(const std::vector<Value>& x){
+    Value total;
+    for (auto& xi : x) total += xi*xi;
+    total = total/x.size();
+    Value scale = (total+1e-5).pow(-0.5);
+    std::vector<Value> out;
+    for (auto& xi : x) out.push_back(xi * scale);
+    return out;
+}
+
+
+
 
 int main() {
     std::cout << "Hello, MicroGPT!" << std::endl;
