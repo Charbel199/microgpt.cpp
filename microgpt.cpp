@@ -48,6 +48,8 @@ struct Value {
         data(data)
     {}
 
+    Value() : data(data_T{0}) {}
+
     Value operator+(const Value& other) const {
         return Value(this->data + other.data, {this, &other}, {1,1});
     }
@@ -122,26 +124,65 @@ struct Value {
     }
 };
 struct Matrix {
-    std::vector<data_T> data;
+    std::vector<Value> data;
     int rows, cols;
 
     Matrix(int rows, int cols, float std=0.08) : data(rows * cols), rows(rows), cols(cols) {
         std::normal_distribution<data_T> dist(0.0, std);
-        for (auto&v : data) v = dist(rng);
+        for (auto&v : data) v = Value(dist(rng));
     }
 
-    data_T& operator()(int i, int j) { return data[i * cols + j]; }
-    const data_T& operator()(int i, int j) const { return data[i * cols + j]; }
+    Value& operator()(int i, int j) { return data[i * cols + j]; }
+    const Value& operator()(int i, int j) const { return data[i * cols + j]; }
 };
 
 struct Layer {
     Matrix attn_wq, attn_wk, attn_wv, attn_wo;
     Matrix mlp_fc1, mlp_fc2;
+
+    Layer(int n_embd) : 
+        attn_wq(n_embd, n_embd),
+        attn_wk(n_embd, n_embd),
+        attn_wv(n_embd, n_embd),
+        attn_wo(n_embd, n_embd),
+        mlp_fc1(4* n_embd, n_embd),
+        mlp_fc2(n_embd, 4 * n_embd)
+    {}
 };
 
 struct Model {
     Matrix wte, wpe, lm_head;
     std::vector<Layer> layers;
+
+    Model(int vocab_size, int n_embd, int block_size, int n_layer):
+        wte(vocab_size, n_embd),
+        wpe(block_size, n_embd),
+        lm_head(vocab_size, n_embd)
+    {
+        for(int i =0;i<n_layer;i++){
+            layers.emplace_back(n_embd); // equivalent to layers.push_back(Layer(n_embd));
+        }
+    }
+
+    std::vector<Value*> params() {
+        std::vector<Value*> p;
+        // helper to add all elements of a matrix
+        auto add = [&](Matrix& m) {
+            for (auto& v : m.data) p.push_back(&v);
+        };
+        add(wte);
+        add(wpe);
+        add(lm_head);
+        for (auto& layer : layers) {
+            add(layer.attn_wq);
+            add(layer.attn_wk);
+            add(layer.attn_wv);
+            add(layer.attn_wo);
+            add(layer.mlp_fc1);
+            add(layer.mlp_fc2);
+        }
+        return p;
+    }
 };
 
 int main() {
@@ -168,9 +209,11 @@ int main() {
     LOG("Vocab size is: "<<vocab_size);
     
     
+    Model model(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
+    std::vector<Value*> params = model.params();
 
-    
-    
+    LOG("Number of params: "<<params.size());
+
     
     
     
