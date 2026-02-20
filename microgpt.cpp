@@ -11,6 +11,9 @@ struct Value {
 
     data_T data;
     mutable grad_T grad = 0;
+
+    // TODO: for our operations we can only have a max of 2 children,
+    // might be worth using regular arrays `const Value* _children[2] = {};` for better performance 
     std::vector<const Value*> _children;
     std::vector<grad_T> _local_grads;
 
@@ -37,7 +40,7 @@ struct Value {
         return Value(this->data * other.data, {this, &other}, {static_cast<grad_T>(other.data), static_cast<grad_T>(this->data)});
     }
     Value pow(data_T other) const {
-        return Value(std::pow(this->data, other), {this}, {std::pow(other*this->data,(other - 1))});
+        return Value(std::pow(this->data, other), {this}, {other*std::pow(this->data,(other - 1))});
     }
     Value log() const {
         return Value(std::log(this->data), {this}, {1/this->data});
@@ -107,5 +110,23 @@ struct Value {
 
 int main() {
     std::cout << "Hello, MicroGPT!" << std::endl;
+
+    Value a(2.0);
+    Value b(3.0);
+
+    Value c = a*b;
+    Value d = c.pow(3);
+
+    for (auto& v : d._local_grads) std::cout << v << " ";
+    
+    std::cout<<d.grad<<std::endl;
+
+    d.backward();
+
+
+    std::cout<<a.grad<<std::endl;
+    std::cout<<b.grad<<std::endl;
+    std::cout<<c.grad<<std::endl;
+    std::cout<<d.grad<<std::endl;
     return 0;
 }
