@@ -366,7 +366,7 @@ int main() {
         KVCache keys(N_LAYER), values(N_LAYER);
         std::vector<Value> losses{};
 
-        for (int pos_id=0; pos_id<n;n++){
+        for (int pos_id=0; pos_id<n;pos_id++){
             int token_id = tokens[pos_id];
             int target_id = tokens[pos_id+1];
             std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
@@ -375,14 +375,14 @@ int main() {
             losses.push_back(loss_t);
         }
         Value total_losses{};
-        for (auto& x : v) total_losses += x;
-        Value loss = total_losses * (1 / n) ;
+        for (auto& x : losses) total_losses += x;
+        Value loss = total_losses * (1.0 / n) ;
 
         // backward pass
         loss.backward();
 
         // adam optimizer
-        float lr_t = learning_rate*(1-step/num_steps);
+        float lr_t = learning_rate*(1-(double)step/num_steps);
         for (int i = 0;i<params.size();i++){
             Value* p = params[i];
             m[i] = beta1 * m[i] + (1 - beta1) * p->grad;
@@ -407,9 +407,9 @@ int main() {
 
         for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
             std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
-            for( Value l : logits){
-                l = l / temperature;
-            }
+            for (int i = 0; i < logits.size(); i++)
+                logits[i] = logits[i] / Value(temperature);
+
             std::vector<Value> probs = softmax(logits);
             
             std::vector<double> weights;
