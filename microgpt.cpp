@@ -18,7 +18,6 @@ constexpr int N_EMBD = 16;
 constexpr int BLOCK_SIZE = 4;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
-using KVCache = std::vector<std::vector<std::vector<Value>>>;
 
 std::mt19937 rng(42); //random seed
 using data_T = double;
@@ -195,6 +194,7 @@ struct Model {
         return p;
     }
 };
+using KVCache = std::vector<std::vector<std::vector<Value>>>;
 
 
 // matrix * vector 
@@ -291,10 +291,25 @@ std::vector<Value> gpt(
                 x_attn.insert(x_attn.end(), head_out.begin(), head_out.end()); //extend
             }
 
+            x = linear(x_attn, state_dict.layers[li].attn_wo);
             
-
+            for (int i = 0; i < x.size(); i++) {
+                x[i] = x[i] + x_residual[i];
+            }
             // 2. MLP block
+            x_residual = x;
+            x = rmsnorm(x);
+            x = linear(x, state_dict.layers[li].mlp_fc1);
+            for (int i = 0; i < x.size(); i++) {
+                x[i] = x[i].relu();
+            }
+            x = linear(x, state_dict.layers[li].mlp_fc2);
+                        for (int i = 0; i < x.size(); i++) {
+                x[i] = x[i] + x_residual[i];
+            }
         }
+        std::vector<Value> logits = linear(x,state_dict.lm_head); 
+        return logits;
 }
 
 
@@ -323,13 +338,93 @@ int main() {
     LOG("Vocab size is: "<<vocab_size);
     
     
-    Model model(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
-    std::vector<Value*> params = model.params();
+    Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
+    std::vector<Value*> params = state_dict.params();
 
     LOG("Number of params: "<<params.size());
 
     
-    
+    float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
+    std::vector<double> m(params.size(), 0.0);
+    std::vector<double> v(params.size(), 0.0);
+    int num_steps = 1000;
+
+    // training loop
+    for (int step=0; step< num_steps; step++){
+        
+        // Take a document, tokenize it, surround it by BOS tokens
+        std::string doc = docs[step%docs.size()];
+        std::vector<int> tokens;
+        tokens.push_back(BOS);
+        for (char ch:doc){
+            tokens.push_back(std::distance(uchars.begin(), uchars.find(ch)));
+        }
+        tokens.push_back(BOS);
+        int n = std::min(BLOCK_SIZE, (int)tokens.size() - 1);
+
+        // Forward tokens through the model
+        KVCache keys(N_LAYER), values(N_LAYER);
+        std::vector<Value> losses{};
+
+        for (int pos_id=0; pos_id<n;n++){
+            int token_id = tokens[pos_id];
+            int target_id = tokens[pos_id+1];
+            std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
+            std::vector<Value> probs = softmax(logits);
+            Value loss_t = -probs[target_id].log();
+            losses.push_back(loss_t);
+        }
+        Value total_losses{};
+        for (auto& x : v) total_losses += x;
+        Value loss = total_losses * (1 / n) ;
+
+        // backward pass
+        loss.backward();
+
+        // adam optimizer
+        float lr_t = learning_rate*(1-step/num_steps);
+        for (int i = 0;i<params.size();i++){
+            Value* p = params[i];
+            m[i] = beta1 * m[i] + (1 - beta1) * p->grad;
+            v[i] = beta2 * v[i] + (1 - beta2) * std::pow(p->grad, 2);
+            grad_T m_hat = m[i] / (1 - std::pow(beta1,(step + 1)));
+            grad_T v_hat = v[i] / (1 - std::pow(beta2,(step + 1)));
+            p->data -= lr_t*m_hat / (std::pow(v_hat,0.5)+eps_adam);
+            p->grad = 0;
+        }
+        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss.data);
+
+    }
+
+    float temperature = 0.5;
+
+    LOG("\n\nTime for inference---------------");
+    std::vector<char> idx_to_char(uchars.begin(), uchars.end());
+    for (int sample_idx = 0; sample_idx<20;sample_idx++){
+        KVCache keys(N_LAYER), values(N_LAYER);
+        int token_id = BOS;
+        std::vector<char> samples;
+
+        for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
+            std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
+            for( Value l : logits){
+                l = l / temperature;
+            }
+            std::vector<Value> probs = softmax(logits);
+            
+            std::vector<double> weights;
+            for (auto& p : probs) weights.push_back(p.data);
+            std::discrete_distribution<int> dist(weights.begin(), weights.end());
+            token_id = dist(rng);
+            if (token_id == BOS){
+                break;
+            }
+            samples.push_back(idx_to_char[token_id]);
+        }
+        
+        std::string result(samples.begin(), samples.end());
+        LOG("Sample: "<< sample_idx<<": "<<result);
+    }
     
     
     
