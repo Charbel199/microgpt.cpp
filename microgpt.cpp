@@ -425,36 +425,5 @@ int main() {
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
     }
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    Value a(2.0);
-    Value b(3.0);
-
-    Value c = a*b;
-    Value d = c.pow(3);
-
-    for (auto& v : d._local_grads) std::cout << v << " ";
-    
-    std::cout<<d.grad<<std::endl;
-
-    d.backward();
-
-
-    std::cout<<a.grad<<std::endl;
-    std::cout<<b.grad<<std::endl;
-    std::cout<<c.grad<<std::endl;
-    std::cout<<d.grad<<std::endl;
     return 0;
 }
