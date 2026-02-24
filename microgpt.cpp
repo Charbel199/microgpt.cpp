@@ -11,7 +11,15 @@
 #include <filesystem>
 #include <cstdlib>
 #include <deque>
+#ifdef DEBUG
 #define LOG(msg) std::cerr << "[LOG] " << msg << std::endl
+#else
+#define LOG(msg)
+#endif
+
+std::mt19937 rng(42); //random seed
+using data_T = double;
+using grad_T = double;
 
 // defining our model params
 constexpr int N_LAYER = 1;
@@ -19,10 +27,8 @@ constexpr int N_EMBD = 16;
 constexpr int BLOCK_SIZE = 16;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
+const data_T SQRT_HEAD_DIM = std::sqrt(HEAD_DIM);
 
-std::mt19937 rng(42); //random seed
-using data_T = double;
-using grad_T = double;
 struct Value {
     data_T data;
     mutable grad_T grad = 0;
@@ -242,7 +248,7 @@ std::vector<Value*> gpt(
                     for (int j=1;j<HEAD_DIM;j++){
                         sum = add(sum, mul(q_h[j],k_h[t][j]));
                     }
-                    attn_logits.push_back(div(sum, make_value(std::pow(HEAD_DIM,0.5))));
+                    attn_logits.push_back(div(sum, make_value(SQRT_HEAD_DIM)));
                 }
                 
                 std::vector<Value*> attn_weights = softmax(attn_logits);
