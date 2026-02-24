@@ -40,7 +40,7 @@ struct Value {
             if (!visited.count(v)){
                 visited.insert(v);
                 for (int i = 0;i < v->num_children;i++){
-                    build_topo(v->num_children[i]);
+                    build_topo(v->_children[i]);
                 }
                 topo.push_back(v);
             }
@@ -104,7 +104,7 @@ Value* relu(Value* a) {
 
 
 Value* neg(Value* a) {
-    return mul(a, make_value(data_T{1.0}));
+    return mul(a, make_value(data_T{-1.0}));
 }
 Value* sub(Value* a, Value* b) {
     return add(a, neg(b));
@@ -264,7 +264,7 @@ std::vector<Value*> gpt(
                 std::vector<Value*> head_out;
                 for (int j=0;j<HEAD_DIM;j++){
                     Value* sum = mul(attn_weights[0],v_h[0][j]);
-                    for (int t=0;t<v_h.size();t++){
+                    for (int t=1;t<v_h.size();t++){
                         sum = add(sum,mul(attn_weights[t],v_h[t][j]));
                     }
                     head_out.push_back(sum);
@@ -353,11 +353,11 @@ int main() {
             int target_id = tokens[pos_id+1];
             std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
             std::vector<Value*> probs = softmax(logits);
-            Value* loss_t = log(neg(probs[target_id]));
+            Value* loss_t = neg(log(probs[target_id]));
             losses.push_back(loss_t);
         }
         Value* total_losses = losses[0]; 
-        for (int i = 0; i<losses.size();i++) total_losses = add(total_losses, losses[i]);
+        for (int i = 1; i<losses.size();i++) total_losses = add(total_losses, losses[i]);
         Value* loss = mul(total_losses, make_value(1.0 / n));
 
         // backward pass
