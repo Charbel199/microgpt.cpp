@@ -10,6 +10,7 @@
 #include <string>
 #include <filesystem>
 #include <cstdlib>
+#include <deque>
 #define LOG(msg) std::cerr << "[LOG] " << msg << std::endl
 
 // defining our model params
@@ -23,113 +24,95 @@ std::mt19937 rng(42); //random seed
 using data_T = double;
 using grad_T = double;
 struct Value {
-
     data_T data;
     mutable grad_T grad = 0;
+    int num_children = 0;
+    const Value* _children[2] = {}; // we only support noop, unary op and binary op 
+    grad_T _local_grads[2] = {};
 
-    // TODO: for our operations we can only have a max of 2 children,
-    // might be worth using regular arrays `const Value* _children[2] = {};` for better performance 
-    std::vector<const Value*> _children;
-    std::vector<grad_T> _local_grads;
-
-    Value(
-        data_T data, 
-        std::vector<const Value*> children, 
-        std::vector<grad_T> local_grads):
-        data(data),
-        grad(0),
-        _children(std::move(children)),
-        _local_grads(std::move(local_grads))
-    {}
-
-    // to support scenarios like 1.0+Val()
-    Value(
-        data_T data):
-        data(data)
-    {}
-
+    Value(data_T data) : data(data) {}
     Value() : data(data_T{0}) {}
 
-    Value operator+(const Value& other) const {
-        return Value(this->data + other.data, {this, &other}, {1,1});
-    }
-    Value operator*(const Value& other) const {
-        return Value(this->data * other.data, {this, &other}, {static_cast<grad_T>(other.data), static_cast<grad_T>(this->data)});
-    }
-    Value pow(data_T other) const {
-        return Value(std::pow(this->data, other), {this}, {other*std::pow(this->data,(other - 1))});
-    }
-    Value log() const {
-        return Value(std::log(this->data), {this}, {1/this->data});
-    }
-    Value exp() const {
-        return Value(std::exp(this->data), {this}, {std::exp(this->data)});
-    }
-    Value relu() const {
-        return Value(std::max(data_T{0}, this->data), {this}, {this->data>0?data_T{1}:data_T{0}});
-    }
-
-
-    Value operator-() const {
-        return *this * -1;
-    }
-    Value operator-(const Value& other) const {
-        return *this + (-other);
-    }
-    Value operator/(const Value& other) const {
-        return *this * other.pow(-1);
-    }
-    Value& operator+=(const Value& other) {
-        *this = *this + other;
-        return *this;
-    }
-    bool operator<(const Value& other) const { return data < other.data; }
-    bool operator>(const Value& other) const { return data > other.data; }
-
-    /**
-    def backward(self):
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._children:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
-        self.grad = 1
-        for v in reversed(topo):
-            for child, local_grad in zip(v._children, v._local_grads):
-                child.grad += local_grad * v.grad
-     */
     void backward(){
         std::vector<const Value*> topo = {};
         std::unordered_set<const Value*> visited = {};
-
-        std::function<void(const Value&)>  build_topo = [&](const Value& v){
-            if (!visited.count(&v)){
-                visited.insert(&v);
-                for (const Value* child : v._children){
-                    build_topo(*child);
+        std::function<void(const Value*)>  build_topo = [&](const Value* v){
+            if (!visited.count(v)){
+                visited.insert(v);
+                for (int i = 0;i < v->num_children;i++){
+                    build_topo(v->num_children[i]);
                 }
-                topo.push_back(&v);
+                topo.push_back(v);
             }
         };
-        build_topo(*this);
+        build_topo(this);
         this->grad = 1;
-
         for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
             const Value* v = *it;
-            
-            for(int i = 0; i< v->_children.size();i++){
+            for(int i = 0; i< v->num_children;i++){
                 v->_children[i]->grad += v->_local_grads[i] * v->grad;
             }
-
         }
-        
-
     }
 };
+
+std::deque<Value> arena; // memory management for Values in a pass
+
+// binary ops middleware
+Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad_T g2) {
+    arena.emplace_back(data);
+    Value* v = &arena.back();
+    v->num_children = 2;
+    v->_children[0] = c1; v->_children[1] = c2;
+    v->_local_grads[0] = g1; v->_local_grads[1] = g2;
+    return v;
+}
+// unary ops middleware
+Value* make_value(data_T data, const Value* c1, grad_T g1) {
+    arena.emplace_back(data);
+    Value* v = &arena.back();
+    v->num_children = 1;
+    v->_children[0] = c1;
+    v->_local_grads[0] = g1;
+    return v;
+}
+// noop middlware (constant, no children)
+Value* make_value(data_T data) {
+    arena.emplace_back(data);
+    return &arena.back();
+}
+
+// operations
+Value* add(Value* a, Value* b) {
+    return make_value(a->data + b->data, a, 1.0, b, 1.0);
+}
+Value* mul(Value* a, Value* b) {
+    return make_value(a->data * b->data, a, static_cast<grad_T>(b->data), b, static_cast<grad_T>(a->data));
+}
+Value* pow(Value* a, data_T other) {
+    return make_value(std::pow(a->data, other), a, other*std::pow(a->data,(other - 1)));
+}
+Value* log(Value* a) {
+    return make_value(std::log(a->data),a, 1/a->data);
+}
+Value* exp(Value* a) {
+    return make_value(std::exp(a->data), a, std::exp(a->data));
+}
+Value* relu(Value* a) {
+    return make_value(std::max(data_T{0}, a->data), a, a->data>0?data_T{1}:data_T{0});
+}
+
+
+Value* neg(Value* a) {
+    return mul(a, make_value(data_T{1.0}));
+}
+Value* sub(Value* a, Value* b) {
+    return add(a, neg(b));
+}
+Value* div(Value* a, Value* b) {
+    return mul(a, pow(b, data_T{-1.0}));
+}
+
 struct Matrix {
     std::vector<Value> data;
     int rows, cols;
@@ -144,8 +127,7 @@ struct Matrix {
         return std::vector<Value>(start, start + cols);
     }
 
-    Value& operator()(int i, int j) { return data[i * cols + j]; }
-    const Value& operator()(int i, int j) const { return data[i * cols + j]; }
+    Value* operator()(int i, int j) { return &data[i * cols + j]; }
 };
 struct Layer {
     Matrix attn_wq, attn_wk, attn_wv, attn_wo;
@@ -170,7 +152,7 @@ struct Model {
         lm_head(vocab_size, n_embd)
     {
         for(int i =0;i<n_layer;i++){
-            layers.emplace_back(n_embd); // equivalent to layers.push_back(Layer(n_embd));
+            layers.emplace_back(n_embd);
         }
     }
 
@@ -194,96 +176,96 @@ struct Model {
         return p;
     }
 };
-using KVCache = std::vector<std::vector<std::vector<Value>>>;
+using KVCache = std::vector<std::vector<std::vector<Value*>>>;
 
 
 // matrix * vector 
-std::vector<Value> linear(const std::vector<Value>& x, Matrix& w){
-    std::vector<Value> out;
+std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){
+    std::vector<Value*> out;
     for(int i=0; i<w.rows;i++){
-        Value sum;
-        for(int j=0; j<w.cols;j++){
-            sum+=w(i,j)*x[j];
+        Value* sum = mul(w(i,0), x[0]); // to avoid creating a noop const 0
+        for(int j=1; j<w.cols;j++){
+            sum = add(sum, mul(w(i,j), x[j]));
         }
         out.push_back(sum);
     }
     return out;
 }
 
-std::vector<Value> softmax(const std::vector<Value>& logits){
-    auto max_it = std::max_element(logits.begin(), logits.end());
-    data_T max_val = max_it->data;
-    std::vector<Value> exps;
-    for (auto& val : logits){
-        exps.push_back((val-max_val).exp());
+std::vector<Value*> softmax(const std::vector<Value*>& logits){
+    data_T max_val = logits[0]->data;
+    for (auto* v: logits) if (v->data > max_val) max_val = v->data;
+    std::vector<Value*> exps;
+    for (auto* v : logits){
+        exps.push_back(exp(sub(v, make_value(max_val))));
     }
-    Value total;
-    for (auto& v : exps) total += v;
-    std::vector<Value> out;
-    for (auto& v : exps) out.push_back(v/total);
+    Value* total = exps[0];
+    for (int i = 1; i<exps.size(); i++) total = add(total, exps[i]);
+    std::vector<Value*> out;
+    for (auto* v : exps) out.push_back(div(v, total));
     return out;
 }
 
 
-std::vector<Value> rmsnorm(const std::vector<Value>& x){
-    Value total;
-    for (auto& xi : x) total += xi*xi;
-    total = total/x.size();
-    Value scale = (total+1e-5).pow(-0.5);
-    std::vector<Value> out;
-    for (auto& xi : x) out.push_back(xi * scale);
+std::vector<Value*> rmsnorm(const std::vector<Value*>& x){
+    Value* total= mul(x[0], x[0]);
+    for (int i = 1; i < x.size(); i++) total = add(total, mul(x[i], x[i]));
+    total = div(total,make_value((data_T)x.size()));
+    Value* scale = pow(add(total,make_value(1e-5)), data_T{-0.5});
+    std::vector<Value*> out;
+    for (auto* xi : x) out.push_back(mul(xi, scale));
     return out;
 }
 
 
-std::vector<Value> gpt(
+std::vector<Value*> gpt(
     const int token_id, 
     const int pos_id,
     KVCache& keys,
     KVCache& values,
     Model& state_dict){
-        std::vector<Value> x; // joint token and position embedding
+        std::vector<Value* > x; // joint token and position embedding
         for (int j=0;j<state_dict.wte.cols;j++){
-            x.push_back(state_dict.wte(token_id, j)+state_dict.wpe(pos_id, j));
+            x.push_back(add(state_dict.wte(token_id, j), state_dict.wpe(pos_id, j)));
         }
         x = rmsnorm(x);
 
         for (int li=0; li<N_LAYER;li++){
             // 1. Multi-Head attention
-            std::vector<Value> x_residual = x;
+            std::vector<Value*> x_residual = x;
             x = rmsnorm(x);
-            std::vector<Value> q = linear(x, state_dict.layers[li].attn_wq);
-            std::vector<Value> k = linear(x, state_dict.layers[li].attn_wk);
-            std::vector<Value> v = linear(x, state_dict.layers[li].attn_wv);
+            std::vector<Value*> q = linear(x, state_dict.layers[li].attn_wq);
+            std::vector<Value*> k = linear(x, state_dict.layers[li].attn_wk);
+            std::vector<Value*> v = linear(x, state_dict.layers[li].attn_wv);
             keys[li].push_back(k);
             values[li].push_back(v);
             
 
-            std::vector<Value> x_attn;
+            std::vector<Value*> x_attn;
             for(int h=0;h<N_HEAD;h++){
                 int hs = h*HEAD_DIM;
-                std::vector<Value> q_h(q.begin() + hs, q.begin() + hs + HEAD_DIM);
-                std::vector<std::vector<Value>> k_h, v_h;
+                std::vector<Value*> q_h(q.begin() + hs, q.begin() + hs + HEAD_DIM);
+                std::vector<std::vector<Value*>> k_h, v_h;
                 for (int t = 0; t < keys[li].size(); t++) {
                     k_h.emplace_back(keys[li][t].begin() + hs, keys[li][t].begin() + hs + HEAD_DIM);
                     v_h.emplace_back(values[li][t].begin() + hs, values[li][t].begin() + hs + HEAD_DIM);
                 }
-                std::vector<Value> attn_logits;
+                std::vector<Value*> attn_logits;
                 for (int t=0;t<k_h.size();t++){
-                    Value sum;
-                    for (int j=0;j<HEAD_DIM;j++){
-                        sum+=q_h[j]*k_h[t][j];
+                    Value* sum = mul(q_h[0],k_h[t][0]);
+                    for (int j=1;j<HEAD_DIM;j++){
+                        sum = add(sum, mul(q_h[j],k_h[t][j]));
                     }
-                    attn_logits.push_back(sum/std::pow(HEAD_DIM,0.5));
+                    attn_logits.push_back(div(sum, make_value(std::pow(HEAD_DIM,0.5))));
                 }
                 
-                std::vector<Value> attn_weights = softmax(attn_logits);
+                std::vector<Value*> attn_weights = softmax(attn_logits);
                 
-                std::vector<Value> head_out;
+                std::vector<Value*> head_out;
                 for (int j=0;j<HEAD_DIM;j++){
-                    Value sum;
+                    Value* sum = mul(attn_weights[0],v_h[0][j]);
                     for (int t=0;t<v_h.size();t++){
-                        sum+=attn_weights[t]*v_h[t][j];
+                        sum = add(sum,mul(attn_weights[t],v_h[t][j]));
                     }
                     head_out.push_back(sum);
                 }
@@ -294,21 +276,21 @@ std::vector<Value> gpt(
             x = linear(x_attn, state_dict.layers[li].attn_wo);
             
             for (int i = 0; i < x.size(); i++) {
-                x[i] = x[i] + x_residual[i];
+                x[i] = add(x[i], x_residual[i]);
             }
             // 2. MLP block
             x_residual = x;
             x = rmsnorm(x);
             x = linear(x, state_dict.layers[li].mlp_fc1);
             for (int i = 0; i < x.size(); i++) {
-                x[i] = x[i].relu();
+                x[i] = relu(x[i]);
             }
             x = linear(x, state_dict.layers[li].mlp_fc2);
                         for (int i = 0; i < x.size(); i++) {
-                x[i] = x[i] + x_residual[i];
+                x[i] = add(x[i], x_residual[i]);
             }
         }
-        std::vector<Value> logits = linear(x,state_dict.lm_head); 
+        std::vector<Value*> logits = linear(x,state_dict.lm_head); 
         return logits;
 }
 
