@@ -274,7 +274,7 @@ std::vector<Value*> gpt(
 int main() {
     // reserve the number of values in arena, so that data is stored contiguously without moving (faster backward pass using Wengert tape)
     // alternative: use deque for arena and remove the following reserve line 
-    arena.reserve(100000);
+    arena.reserve(200000);
     if (!std::filesystem::exists("input.txt")){
         LOG("Downloading input.txt ...");
         system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt");
