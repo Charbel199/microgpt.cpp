@@ -16,7 +16,7 @@
 // defining our model params
 constexpr int N_LAYER = 1;
 constexpr int N_EMBD = 16;
-constexpr int BLOCK_SIZE = 4;
+constexpr int BLOCK_SIZE = 16;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
 
@@ -33,30 +33,19 @@ struct Value {
     Value(data_T data) : data(data) {}
     Value() : data(data_T{0}) {}
 
-    void backward(){
-        std::vector<const Value*> topo = {};
-        std::unordered_set<const Value*> visited = {};
-        std::function<void(const Value*)>  build_topo = [&](const Value* v){
-            if (!visited.count(v)){
-                visited.insert(v);
-                for (int i = 0;i < v->num_children;i++){
-                    build_topo(v->_children[i]);
-                }
-                topo.push_back(v);
-            }
-        };
-        build_topo(this);
-        this->grad = 1;
-        for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
-            const Value* v = *it;
-            for(int i = 0; i< v->num_children;i++){
-                v->_children[i]->grad += v->_local_grads[i] * v->grad;
-            }
-        }
-    }
+
 };
 
 std::deque<Value> arena; // memory management for Values in a pass
+
+void backward(Value* loss){
+    loss->grad = 1;
+    for (auto it = arena.rbegin(); it != arena.rend(); ++it) {
+        for(int i = 0; i< it->num_children;i++){
+            it->_children[i]->grad += it->_local_grads[i] * it->grad;
+        }
+    }
+}
 
 // binary ops middleware
 Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad_T g2) {
@@ -349,7 +338,7 @@ int main() {
         Value* loss = mul(total_losses, make_value(1.0 / n));
 
         // backward pass
-        loss->backward();
+        backward(loss);
 
         // adam optimizer
         float lr_t = learning_rate*(1-(double)step/num_steps);
