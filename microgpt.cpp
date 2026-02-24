@@ -38,12 +38,9 @@ struct Value {
 
     Value(data_T data) : data(data) {}
     Value() : data(data_T{0}) {}
-
-
 };
 
 std::vector<Value> arena; // memory management for Values in a pass
-
 
 void backward(Value* loss){
     loss->grad = 1;
@@ -54,8 +51,7 @@ void backward(Value* loss){
     }
 }
 
-// binary ops middleware
-Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad_T g2) {
+Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad_T g2) { // binary ops middleware
     arena.emplace_back(data);
     Value* v = &arena.back();
     v->num_children = 2;
@@ -63,8 +59,7 @@ Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad
     v->_local_grads[0] = g1; v->_local_grads[1] = g2;
     return v;
 }
-// unary ops middleware
-Value* make_value(data_T data, const Value* c1, grad_T g1) {
+Value* make_value(data_T data, const Value* c1, grad_T g1) { // unary ops middleware
     arena.emplace_back(data);
     Value* v = &arena.back();
     v->num_children = 1;
@@ -72,8 +67,7 @@ Value* make_value(data_T data, const Value* c1, grad_T g1) {
     v->_local_grads[0] = g1;
     return v;
 }
-// noop middlware (constant, no children)
-Value* make_value(data_T data) {
+Value* make_value(data_T data) { // noop middlware (constant, no children)
     arena.emplace_back(data);
     return &arena.back();
 }
@@ -172,8 +166,7 @@ struct Model {
 };
 using KVCache = std::vector<std::vector<std::vector<Value*>>>;
 
-// matrix * vector 
-std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){
+std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){ // matrix * vector 
     std::vector<Value*> out;
     out.reserve(w.rows); //optimization
     for(int i=0; i<w.rows;i++){
@@ -191,9 +184,7 @@ std::vector<Value*> softmax(const std::vector<Value*>& logits){
     for (auto* v: logits) if (v->data > max_val) max_val = v->data;
     std::vector<Value*> exps;
     exps.reserve(logits.size()); //optimization
-    for (auto* v : logits){
-        exps.push_back(exp(sub(v, make_value(max_val))));
-    }
+    for (auto* v : logits) exps.push_back(exp(sub(v, make_value(max_val))));
     Value* total = exps[0];
     for (int i = 1; i<exps.size(); i++) total = add(total, exps[i]);
     std::vector<Value*> out;
@@ -224,17 +215,16 @@ std::vector<Value*> gpt(
             x.push_back(add(state_dict.wte(token_id, j), state_dict.wpe(pos_id, j)));
         }
         x = rmsnorm(x);
-
         for (int li=0; li<N_LAYER;li++){
             // 1. Multi-Head attention
             std::vector<Value*> x_residual = x;
             x = rmsnorm(x);
+
             std::vector<Value*> q = linear(x, state_dict.layers[li].attn_wq);
             std::vector<Value*> k = linear(x, state_dict.layers[li].attn_wk);
             std::vector<Value*> v = linear(x, state_dict.layers[li].attn_wv);
             keys[li].push_back(k);
             values[li].push_back(v);
-            
 
             std::vector<Value*> x_attn;
             for(int h=0;h<N_HEAD;h++){
@@ -253,9 +243,7 @@ std::vector<Value*> gpt(
                     }
                     attn_logits.push_back(div(sum, make_value(SQRT_HEAD_DIM)));
                 }
-                
                 std::vector<Value*> attn_weights = softmax(attn_logits);
-                
                 std::vector<Value*> head_out;
                 for (int j=0;j<HEAD_DIM;j++){
                     Value* sum = mul(attn_weights[0],v_h[0][j]);
@@ -264,12 +252,10 @@ std::vector<Value*> gpt(
                     }
                     head_out.push_back(sum);
                 }
-
                 x_attn.insert(x_attn.end(), head_out.begin(), head_out.end()); //extend
             }
 
             x = linear(x_attn, state_dict.layers[li].attn_wo);
-            
             for (int i = 0; i < x.size(); i++) {
                 x[i] = add(x[i], x_residual[i]);
             }
@@ -277,13 +263,9 @@ std::vector<Value*> gpt(
             x_residual = x;
             x = rmsnorm(x);
             x = linear(x, state_dict.layers[li].mlp_fc1);
-            for (int i = 0; i < x.size(); i++) {
-                x[i] = relu(x[i]);
-            }
+            for (int i = 0; i < x.size(); i++) x[i] = relu(x[i]);
             x = linear(x, state_dict.layers[li].mlp_fc2);
-                        for (int i = 0; i < x.size(); i++) {
-                x[i] = add(x[i], x_residual[i]);
-            }
+            for (int i = 0; i < x.size(); i++) x[i] = add(x[i], x_residual[i]);
         }
         std::vector<Value*> logits = linear(x,state_dict.lm_head); 
         return logits;
