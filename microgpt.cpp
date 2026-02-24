@@ -97,15 +97,14 @@ Value* exp(Value* a) {
 Value* relu(Value* a) {
     return make_value(std::max(data_T{0}, a->data), a, a->data>0?data_T{1}:data_T{0});
 }
-
+Value* div(Value* a, Value* b) {
+    return make_value(a->data / b->data, a, 1.0/b->data, b, -a->data/(b->data*b->data));
+}
 Value* neg(Value* a) {
-    return mul(a, make_value(data_T{-1.0}));
+    return make_value(-a->data, a, -1.0);
 }
 Value* sub(Value* a, Value* b) {
-    return add(a, neg(b));
-}
-Value* div(Value* a, Value* b) {
-    return mul(a, pow(b, data_T{-1.0}));
+    return make_value(a->data - b->data, a, 1.0, b, -1.0);
 }
 
 struct Matrix {
@@ -176,6 +175,7 @@ using KVCache = std::vector<std::vector<std::vector<Value*>>>;
 // matrix * vector 
 std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){
     std::vector<Value*> out;
+    out.reserve(w.rows); //optimization
     for(int i=0; i<w.rows;i++){
         Value* sum = mul(w(i,0), x[0]); // to avoid creating a noop const 0
         for(int j=1; j<w.cols;j++){
@@ -190,12 +190,14 @@ std::vector<Value*> softmax(const std::vector<Value*>& logits){
     data_T max_val = logits[0]->data;
     for (auto* v: logits) if (v->data > max_val) max_val = v->data;
     std::vector<Value*> exps;
+    exps.reserve(logits.size()); //optimization
     for (auto* v : logits){
         exps.push_back(exp(sub(v, make_value(max_val))));
     }
     Value* total = exps[0];
     for (int i = 1; i<exps.size(); i++) total = add(total, exps[i]);
     std::vector<Value*> out;
+    out.reserve(logits.size()); //optimization
     for (auto* v : exps) out.push_back(div(v, total));
     return out;
 }
@@ -206,6 +208,7 @@ std::vector<Value*> rmsnorm(const std::vector<Value*>& x){
     total = div(total,make_value((data_T)x.size()));
     Value* scale = pow(add(total,make_value(1e-5)), data_T{-0.5});
     std::vector<Value*> out;
+    out.reserve(x.size()); //optimization
     for (auto* xi : x) out.push_back(mul(xi, scale));
     return out;
 }
