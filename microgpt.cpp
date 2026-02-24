@@ -346,22 +346,22 @@ int main() {
 
         // Forward tokens through the model
         KVCache keys(N_LAYER), values(N_LAYER);
-        std::vector<Value> losses{};
+        std::vector<Value*> losses{};
 
         for (int pos_id=0; pos_id<n;pos_id++){
             int token_id = tokens[pos_id];
             int target_id = tokens[pos_id+1];
-            std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
-            std::vector<Value> probs = softmax(logits);
-            Value loss_t = -probs[target_id].log();
+            std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
+            std::vector<Value*> probs = softmax(logits);
+            Value* loss_t = log(neg(probs[target_id]));
             losses.push_back(loss_t);
         }
-        Value total_losses{};
-        for (auto& x : losses) total_losses += x;
-        Value loss = total_losses * (1.0 / n) ;
+        Value* total_losses = losses[0]; 
+        for (int i = 0; i<losses.size();i++) total_losses = add(total_losses, losses[i]);
+        Value* loss = mul(total_losses, make_value(1.0 / n));
 
         // backward pass
-        loss.backward();
+        loss->backward();
 
         // adam optimizer
         float lr_t = learning_rate*(1-(double)step/num_steps);
@@ -374,8 +374,8 @@ int main() {
             p->data -= lr_t*m_hat / (std::pow(v_hat,0.5)+eps_adam);
             p->grad = 0;
         }
-        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss.data);
-
+        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss->data);
+        arena.clear(); // Clear memory after the end of backprop
     }
 
     float temperature = 0.5;
@@ -388,14 +388,14 @@ int main() {
         std::vector<char> samples;
 
         for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
-            std::vector<Value> logits = gpt(token_id, pos_id, keys, values, state_dict);
+            std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
             for (int i = 0; i < logits.size(); i++)
-                logits[i] = logits[i] / Value(temperature);
+                logits[i] = div(logits[i],make_value(temperature));
 
-            std::vector<Value> probs = softmax(logits);
+            std::vector<Value*> probs = softmax(logits);
             
             std::vector<double> weights;
-            for (auto& p : probs) weights.push_back(p.data);
+            for (auto& p : probs) weights.push_back(p->data);
             std::discrete_distribution<int> dist(weights.begin(), weights.end());
             token_id = dist(rng);
             if (token_id == BOS){
@@ -403,7 +403,7 @@ int main() {
             }
             samples.push_back(idx_to_char[token_id]);
         }
-        
+    
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
     }
