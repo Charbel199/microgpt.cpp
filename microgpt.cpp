@@ -379,6 +379,7 @@ int main() {
         }
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
+        arena.clear(); // Clear memory after the end of backprop
     }
     return 0;
 }
