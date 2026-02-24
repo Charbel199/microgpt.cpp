@@ -102,7 +102,6 @@ Value* relu(Value* a) {
     return make_value(std::max(data_T{0}, a->data), a, a->data>0?data_T{1}:data_T{0});
 }
 
-
 Value* neg(Value* a) {
     return mul(a, make_value(data_T{-1.0}));
 }
@@ -178,7 +177,6 @@ struct Model {
 };
 using KVCache = std::vector<std::vector<std::vector<Value*>>>;
 
-
 // matrix * vector 
 std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){
     std::vector<Value*> out;
@@ -206,7 +204,6 @@ std::vector<Value*> softmax(const std::vector<Value*>& logits){
     return out;
 }
 
-
 std::vector<Value*> rmsnorm(const std::vector<Value*>& x){
     Value* total= mul(x[0], x[0]);
     for (int i = 1; i < x.size(); i++) total = add(total, mul(x[i], x[i]));
@@ -216,7 +213,6 @@ std::vector<Value*> rmsnorm(const std::vector<Value*>& x){
     for (auto* xi : x) out.push_back(mul(xi, scale));
     return out;
 }
-
 
 std::vector<Value*> gpt(
     const int token_id, 
@@ -294,11 +290,8 @@ std::vector<Value*> gpt(
         return logits;
 }
 
-
-
 int main() {
     std::cout << "Hello, MicroGPT!" << std::endl;
-
     if (!std::filesystem::exists("input.txt")){
         LOG("Downloading input.txt ...");
         system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt");
@@ -319,13 +312,10 @@ int main() {
     int vocab_size = uchars.size()+1;
     LOG("Vocab size is: "<<vocab_size);
     
-    
     Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
     std::vector<Value*> params = state_dict.params();
-
     LOG("Number of params: "<<params.size());
 
-    
     float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
     std::vector<double> m(params.size(), 0.0);
     std::vector<double> v(params.size(), 0.0);
@@ -333,7 +323,6 @@ int main() {
 
     // training loop
     for (int step=0; step< num_steps; step++){
-        
         // Take a document, tokenize it, surround it by BOS tokens
         std::string doc = docs[step%docs.size()];
         std::vector<int> tokens;
@@ -347,7 +336,6 @@ int main() {
         // Forward tokens through the model
         KVCache keys(N_LAYER), values(N_LAYER);
         std::vector<Value*> losses{};
-
         for (int pos_id=0; pos_id<n;pos_id++){
             int token_id = tokens[pos_id];
             int target_id = tokens[pos_id+1];
@@ -386,14 +374,11 @@ int main() {
         KVCache keys(N_LAYER), values(N_LAYER);
         int token_id = BOS;
         std::vector<char> samples;
-
         for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
             std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
             for (int i = 0; i < logits.size(); i++)
                 logits[i] = div(logits[i],make_value(temperature));
-
             std::vector<Value*> probs = softmax(logits);
-            
             std::vector<double> weights;
             for (auto& p : probs) weights.push_back(p->data);
             std::discrete_distribution<int> dist(weights.begin(), weights.end());
@@ -403,7 +388,6 @@ int main() {
             }
             samples.push_back(idx_to_char[token_id]);
         }
-    
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
     }
