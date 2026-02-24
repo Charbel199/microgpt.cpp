@@ -36,7 +36,8 @@ struct Value {
 
 };
 
-std::deque<Value> arena; // memory management for Values in a pass
+std::vector<Value> arena; // memory management for Values in a pass
+
 
 void backward(Value* loss){
     loss->grad = 1;
@@ -280,7 +281,9 @@ std::vector<Value*> gpt(
 }
 
 int main() {
-    std::cout << "Hello, MicroGPT!" << std::endl;
+    // reserve the number of values in arena, so that data is stored contiguously without moving (faster backward pass using Wengert tape)
+    // alternative: use deque for arena and remove the following reserve line 
+    arena.reserve(100000);
     if (!std::filesystem::exists("input.txt")){
         LOG("Downloading input.txt ...");
         system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt");
@@ -352,6 +355,8 @@ int main() {
             p->grad = 0;
         }
         LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss->data);
+        LOG("Arena size: " << arena.size());
+
         arena.clear(); // Clear memory after the end of backprop
     }
 
