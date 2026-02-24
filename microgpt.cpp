@@ -351,13 +351,15 @@ int main() {
 
         // adam optimizer
         float lr_t = learning_rate*(1-(double)step/num_steps);
+        double beta1_pow = std::pow(beta1,(step + 1));
+        double beta2_pow = std::pow(beta2,(step + 1));
         for (int i = 0;i<params.size();i++){
             Value* p = params[i];
             m[i] = beta1 * m[i] + (1 - beta1) * p->grad;
-            v[i] = beta2 * v[i] + (1 - beta2) * std::pow(p->grad, 2);
-            grad_T m_hat = m[i] / (1 - std::pow(beta1,(step + 1)));
-            grad_T v_hat = v[i] / (1 - std::pow(beta2,(step + 1)));
-            p->data -= lr_t*m_hat / (std::pow(v_hat,0.5)+eps_adam);
+            v[i] = beta2 * v[i] + (1 - beta2) * p->grad * p->grad;
+            grad_T m_hat = m[i] / (1 - beta1_pow);
+            grad_T v_hat = v[i] / (1 - beta2_pow);
+            p->data -= lr_t*m_hat / (std::sqrt(v_hat)+eps_adam);
             p->grad = 0;
         }
         LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss->data);
@@ -367,7 +369,6 @@ int main() {
     }
 
     float temperature = 0.5;
-
     LOG("\n\nTime for inference---------------");
     std::vector<char> idx_to_char(uchars.begin(), uchars.end());
     for (int sample_idx = 0; sample_idx<20;sample_idx++){
