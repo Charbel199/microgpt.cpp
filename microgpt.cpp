@@ -376,7 +376,7 @@ int main() {
         }
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
-        arena.clear(); // Clear memory after the end of backprop
+        arena.clear(); // Clear memory after the end of inference pass
     }
     return 0;
 }
