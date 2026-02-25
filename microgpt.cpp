@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <cstdlib>
 #include <deque>
+#include <cstring>
+
 #ifdef DEBUG
 #define LOG(msg) std::cerr << "[LOG] " << msg << std::endl
 #else
@@ -27,26 +29,99 @@ constexpr int N_EMBD = 16;
 constexpr int BLOCK_SIZE = 16;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
-const data_T SQRT_HEAD_DIM = std::sqrt(HEAD_DIM);
+const data_T INV_SQRT_HEAD_DIM = 1.0 / std::sqrt((data_T)HEAD_DIM);
+constexpr int NO_CHILD = -1; // since children point to indices -> no child index = -1
 
-struct Value {
-    data_T data;
-    mutable grad_T grad = 0;
-    int num_children = 0;
-    const Value* _children[2] = {}; // we only support noop, unary op and binary op 
-    grad_T _local_grads[2] = {};
+struct Arena{
+    data_T* data; // pointer to data array
+    grad_T* grad; // pointer to grad array
+    int* i_child0; // pointer to first child index array
+    int* i_child1; // pointer to second child index array
+    grad_T* local_grad0; // pointer to first local grad array
+    grad_T* local_grad1; // pointer to second local grad array
 
-    Value(data_T data) : data(data) {}
-    Value() : data(data_T{0}) {}
+    int size = 0; // current number of elements in the arena per array (num of data = num of grad = ...)
+    int cap = 0; // maximum size (number of elements) our arena can handle at the moment PER ARRAY
+
+    void init(int n){
+        cap = n;
+        data = (data_T*)std::malloc(n * sizeof(data_T));
+        grad = (grad_T*)std::malloc(n * sizeof(grad_T));
+        i_child0 = (int*)std::malloc(n * sizeof(int));
+        i_child1 = (int*)std::malloc(n * sizeof(int));
+        local_grad0 = (grad_T*)std::malloc(n * sizeof(grad_T));
+        local_grad1 = (grad_T*)std::malloc(n * sizeof(grad_T));
+    }
+
+    void grow(){ // double memory allocation for all arrays (Since they grow in parallel)
+        int new_cap = cap * 2;
+        data = (data_T*)std::realloc(data, new_cap * sizeof(data_T));
+        grad = (grad_T*)std::realloc(grad, new_cap * sizeof(grad_T));
+        i_child0 = (int*)std::realloc(i_child0, new_cap * sizeof(int));
+        i_child1 = (int*)std::realloc(i_child1, new_cap * sizeof(int));
+        local_grad0 = (grad_T*)std::realloc(local_grad0, new_cap * sizeof(grad_T));
+        local_grad1 = (grad_T*)std::realloc(local_grad1, new_cap * sizeof(grad_T));
+        cap = new_cap;
+    }
+
+    int size() const { return size; }
+    inline void ensure() { if (size == cap) grow(); }
+
+    void truncate(int n) { size = n; } // remove elements (ignore them) until size n
+    
+    void zero_grad(int n) { std::memset(grad, 0, n * sizeof(grad_T)); }
+    
+    inline int push_no_op(data_T d){
+        ensure();
+        int i = size++;
+        data[i] = d;
+        grad[i] = 0;
+        i_child0[i] = NO_CHILD; i_child1[i] = NO_CHILD;
+        local_grad0[i] = 0; local_grad1[i] = 0;
+        return i;
+    }
+
+    inline int push_unary_op(data_T d, int i_c, grad_T g){
+        ensure();
+        int i = size++;
+        data[i] = d;
+        grad[i] = 0;
+        i_child0[i] = i_c; i_child1[i] = NO_CHILD;
+        local_grad0[i] = g; local_grad1[i] = 0;
+        return i;
+    }
+    
+    inline int push_binary_op(data_T d, int i_c0, int i_c1, grad_T g0, grad_T g1){
+        ensure();
+        int i = size++;
+        data[i] = d;
+        grad[i] = 0;
+        i_child0[i] = i_c0; i_child1[i] = i_c1;
+        local_grad0[i] = g0; local_grad1[i] = g1;
+        return i;
+    }
+
+    void cleanup(){
+        std::free(data); std::free(grad);
+        std::free(i_child0); std::free(i_child1);
+        std::free(local_grad0); std::free(local_grad1);
+    }
 };
 
-std::vector<Value> arena; // memory management for Values in a pass
+Arena arena{};// memory management for all of our values
 
-void backward(Value* loss){
-    loss->grad = 1;
-    for (auto it = arena.rbegin(); it != arena.rend(); ++it) {
-        for(int i = 0; i< it->num_children;i++){
-            it->_children[i]->grad += it->_local_grads[i] * it->grad;
+void backward(int i_loss){
+    arena.grad[i_loss] = 1;
+    for (int i = i_loss; i>=0 ; i--){
+        grad_T g = arena.grad[i];
+        if (g == 0.0f){continue;} // skip node when  grad is 0
+        int i_c0 = arena.i_child0[i];
+        int i_c1 = arena.i_child1[i];
+        if (i_c0 != NO_CHILD){
+            arena.grad[i_c0] += arena.local_grad0[i] * g;
+            if (i_c1 != NO_CHILD){
+                arena.grad[i_c1] += arena.local_grad1[i] * g;
+            }
         }
     }
 }
