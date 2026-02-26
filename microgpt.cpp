@@ -91,7 +91,7 @@ struct Arena{
         return i;
     }
     
-    inline int push_binary_op(data_T d, int i_c0, int i_c1, grad_T g0, grad_T g1){
+    inline int push_binary_op(data_T d, int i_c0, grad_T g0, int i_c1, grad_T g1){
         ensure();
         int i = size++;
         data[i] = d;
@@ -126,55 +126,25 @@ void backward(int i_loss){
     }
 }
 
-Value* make_value(data_T data, const Value* c1, grad_T g1, const Value* c2, grad_T g2) { // binary ops middleware
-    arena.emplace_back(data);
-    Value* v = &arena.back();
-    v->num_children = 2;
-    v->_children[0] = c1; v->_children[1] = c2;
-    v->_local_grads[0] = g1; v->_local_grads[1] = g2;
-    return v;
-}
-Value* make_value(data_T data, const Value* c1, grad_T g1) { // unary ops middleware
-    arena.emplace_back(data);
-    Value* v = &arena.back();
-    v->num_children = 1;
-    v->_children[0] = c1;
-    v->_local_grads[0] = g1;
-    return v;
-}
-Value* make_value(data_T data) { // noop middlware (constant, no children)
-    arena.emplace_back(data);
-    return &arena.back();
-}
+// operations (binary)
+inline int vadd(int a, int b) { return arena.push_binary_op(arena.data[a] + arena.data[b], a, 1.0, b, 1.0); }
+inline int vsub(int a, int b) { return arena.push_binary_op(arena.data[a] - arena.data[b], a, 1.0, b, -1.0); }
+inline int vmul(int a, int b) { return arena.push_binary_op(arena.data[a] * arena.data[b], a, arena.data[b], b, arena.data[a]); }
+inline int vdiv(int a, int b) { return arena.push_binary_op(arena.data[a] / arena.data[b], a, 1.0/arena.data[b], b, -arena.data[a]/(arena.data[b]*arena.data[b])); }
 
-// operations
-Value* add(Value* a, Value* b) {
-    return make_value(a->data + b->data, a, 1.0, b, 1.0);
-}
-Value* mul(Value* a, Value* b) {
-    return make_value(a->data * b->data, a, static_cast<grad_T>(b->data), b, static_cast<grad_T>(a->data));
-}
-Value* pow(Value* a, data_T other) {
-    return make_value(std::pow(a->data, other), a, other*std::pow(a->data,(other - 1)));
-}
-Value* log(Value* a) {
-    return make_value(std::log(a->data),a, 1/a->data);
-}
-Value* exp(Value* a) {
-    return make_value(std::exp(a->data), a, std::exp(a->data));
-}
-Value* relu(Value* a) {
-    return make_value(std::max(data_T{0}, a->data), a, a->data>0?data_T{1}:data_T{0});
-}
-Value* div(Value* a, Value* b) {
-    return make_value(a->data / b->data, a, 1.0/b->data, b, -a->data/(b->data*b->data));
-}
-Value* neg(Value* a) {
-    return make_value(-a->data, a, -1.0);
-}
-Value* sub(Value* a, Value* b) {
-    return make_value(a->data - b->data, a, 1.0, b, -1.0);
-}
+// operations (unary)
+inline int vneg(int a) { return arena.push_unary_op(-arena.data[a], a, -1.0); }
+inline int vlog(int a) { return arena.push_unary_op(std::log(arena.data[a]), a, 1.0 / arena.data[a]); }
+inline int vexp(int a) { data_T e = std::exp(arena.data[a]); return arena.push_unary_op(e, a, e); }
+inline int vrelu(int a) { return arena.push_unary_op(std::max(0.0, arena.data[a]), a, arena.data[a] > 0 ? 1.0 : 0.0); }
+inline int vpow(int a, data_T n) { return arena.push_unary_op(std::pow(arena.data[a], n), a, n * std::pow(arena.data[a], n - 1)); }
+
+// operations with consts (1 node instead of 2)
+inline int mul_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] * c, a, c); }
+inline int div_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] / c, a, 1.0 / c); }
+inline int add_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] + c, a, 1.0); }
+inline int sub_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] - c, a, 1.0); }
+
 
 struct Matrix {
     std::vector<Value> data;
