@@ -15,8 +15,24 @@ You can remove `-DDEBUG` for slightly faster execution.
 
 # Performance
 
-The original [Python](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) implementation takes around 150 ms per step and about 2 minutes 30 seconds in total to train.
+Andrej Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) was never meant to be fast, its goal is extreme readability and making it easy to learn how a GPT works from scratch. This C++ version focuses on optimization while remaining reasonably readable, because optimization is fun.
 
-This C++ implementation takes around 0.3 ms per step and about 0.3 seconds in total to train.
+On average, the C++ implementation achieves a **~400-540x speedup** over the Python version depending on network size on my `Intel Core Ultra 7 165H`.
 
-This corresponds to a speedup of roughly 400-500×. Andrej Karpathy’s goal was not performance but extreme readability and ease of understanding; this version focuses on optimization while remaining reasonably readable because otpimization is fun.
+Benchmarks run on the same machine, compiled with `g++ -std=c++17 -O3`.
+
+_Note: 16x16 = N_EMBD=16, BLOCK_SIZE=16_
+
+### 16x16 network, 10000 steps
+
+| Implementation | Time | Speedup |
+|---|---|---|
+| Python | 22m 4s | 1x |
+| C++ | 3.3s | **~400x** |
+
+### 64x64 network, 1000 steps
+
+| Implementation | Time | Speedup |
+|---|---|---|
+| Python | 1h 14m | 1x |
+| C++ | 8.2s | **~540x** |
