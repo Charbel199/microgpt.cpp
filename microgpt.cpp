@@ -64,7 +64,7 @@ struct Arena{
         cap = new_cap;
     }
 
-    int size() const { return size; }
+    int size() const { return size; } // current arena next pointer
     inline void ensure() { if (size == cap) grow(); }
 
     void truncate(int n) { size = n; } // remove elements (ignore them) until size n
@@ -147,20 +147,16 @@ inline int sub_const(int a, data_T c) { return arena.push_unary_op(arena.data[a]
 
 
 struct Matrix {
-    std::vector<Value> data;
+    int data_start;
     int rows, cols;
 
-    Matrix(int rows, int cols, float std=0.08) : data(rows * cols), rows(rows), cols(cols) {
+    Matrix(int rows, int cols, float std=0.08) : rows(rows), cols(cols) {
+        data_start = arena.size(); // start at the current arena pointer
         std::normal_distribution<data_T> dist(0.0, std);
-        for (auto&v : data) v = Value(dist(rng));
+        for (int i = 0; i < rows*cols; i++) arena.push_no_op(dist(rng));
     }
 
-    std::vector<Value> row(int i) {
-        auto start = data.begin() + i * cols;
-        return std::vector<Value>(start, start + cols);
-    }
-
-    Value* operator()(int i, int j) { return &data[i * cols + j]; }
+    int at(int i, int j) const { return data_start + i * cols + j;}
 };
 struct Layer {
     Matrix attn_wq, attn_wk, attn_wv, attn_wo;
@@ -189,11 +185,11 @@ struct Model {
         }
     }
 
-    std::vector<Value*> params() {
-        std::vector<Value*> p;
+    std::vector<int> params() {
+        std::vector<int> p;
         // helper to add all elements of a matrix
         auto add = [&](Matrix& m) {
-            for (auto& v : m.data) p.push_back(&v);
+            for (int i = 0; i < m.rows*m.cols; i++) p.push_back(m.data_start+i); // add indices to matrix values in arena
         };
         add(wte);
         add(wpe);
