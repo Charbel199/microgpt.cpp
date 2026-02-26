@@ -32,6 +32,7 @@ constexpr int HEAD_DIM = N_EMBD / N_HEAD;
 const data_T INV_SQRT_HEAD_DIM = 1.0 / std::sqrt((data_T)HEAD_DIM);
 constexpr int NO_CHILD = -1; // since children point to indices -> no child index = -1
 constexpr int MAX_VOCAB_SIZE = 27;
+constexpr int NUM_STEPS = 1000;
 
 int weights_end = 0;
 struct Arena{
@@ -400,10 +401,10 @@ int main() {
     float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
     std::vector<double> m(params.size(), 0.0);
     std::vector<double> v(params.size(), 0.0);
-    int num_steps = 1000;
+    int NUM_STEPS = 1000;
 
     // training loop
-    for (int step=0; step< num_steps; step++){
+    for (int step=0; step< NUM_STEPS; step++){
         // Take a document, tokenize it, surround it by BOS tokens
         std::string doc = docs[step%docs.size()];
         int tokens[BLOCK_SIZE+2]; // context + 2 BOS
@@ -435,7 +436,7 @@ int main() {
         backward(loss);
 
         // adam optimizer
-        float lr_t = learning_rate*(1-(double)step/num_steps);
+        float lr_t = learning_rate*(1-(double)step/NUM_STEPS);
         double beta1_pow = std::pow(beta1,(step + 1));
         double beta2_pow = std::pow(beta2,(step + 1));
         for (int i = 0;i<params.size();i++){
@@ -447,7 +448,7 @@ int main() {
             grad_T v_hat = v[i] / (1 - beta2_pow);
             arena.data[i_p] -= lr_t*m_hat / (std::sqrt(v_hat)+eps_adam);
         }
-        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< arena.data[loss]);
+        LOG("Step "<<(step+1)<<" / "<<NUM_STEPS<<" | loss "<< arena.data[loss]);
         LOG("Arena size: " << arena.get_size());
         arena.truncate(weights_end); // clean until end of weights values
         arena.zero_grad(weights_end);
