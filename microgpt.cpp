@@ -31,6 +31,7 @@ constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
 const data_T INV_SQRT_HEAD_DIM = 1.0 / std::sqrt((data_T)HEAD_DIM);
 constexpr int NO_CHILD = -1; // since children point to indices -> no child index = -1
+constexpr int MAX_VOCAB_SIZE = 27;
 
 struct Arena{
     data_T* data; // pointer to data array
@@ -205,111 +206,156 @@ struct Model {
         return p;
     }
 };
-using KVCache = std::vector<std::vector<std::vector<Value*>>>;
 
-std::vector<Value*> linear(const std::vector<Value*>& x, Matrix& w){ // matrix * vector 
-    std::vector<Value*> out;
-    out.reserve(w.rows); //optimization
-    for(int i=0; i<w.rows;i++){
-        Value* sum = mul(w(i,0), x[0]); // to avoid creating a noop const 0
-        for(int j=1; j<w.cols;j++){
-            sum = add(sum, mul(w(i,j), x[j]));
-        }
-        out.push_back(sum);
+/*
+keys[layer][timestep][dimension]
+       |        |         |
+       |        |         -- which of the 16 numbers in the key vector (0..N_EMBD-1)
+       |        -- which token position was processed (grows: 0, 1, 2, ...)
+       -- which transformer layer (0..N_LAYER-1). Each layer has its own Q/K/V weights,
+          so each layer produces different keys and values
+
+key = [k0, k1, k2, k3,   k4, k5, k6, k7,   k8, k9, k10, k11,   k12, k13, k14, k15]
+       --- head 0 -----  ---- head 1 ----  ---- head 2 -----   ----- head 3 -----
+*/
+struct FlatKVCache{
+    std::vector<int> data; // indices to find the values we need
+    int n_layer, dim;
+    int counts [N_LAYER] = {}; // timesteps per layer (max N_LAYER layers)
+
+    FlatKVCache(int n_layer, int d) : n_layer(n_layer), dim(dim) {
+        data.reserve(n_layer * BLOCK_SIZE * dim); // pre-alloc for up to BLOCK_SIZE timesteps (context length)
     }
-    return out;
+
+    void push(int i_layer, const int* vals){
+        int base = 0;
+        for (int l = 0; l < i_layer; l++) base += counts[l] * dim; // skip past all time steps for all previous layers
+        base += counts[i_layer] * dim; // skip past this existing time steps for this layer
+        // insert at the right position
+        data.insert(data.begin() + base, vals, vals + dim);
+        counts[i_layer]++; // we are now at the next time step for layer: i_layer
+    }
+
+    int get(int i_layer, int t, int d){
+        int base = 0;
+        for (int l = 0; l < i_layer; l++) base += counts[l] * dim;
+        return data[base + t * dim + d];
+    }
+
+    int num_timesteps(int i_layer) const { return counts[i_layer]; }
+
+    void clear() {
+        data.clear();
+        std::memset(counts, 0, sizeof(counts));
+    }
+};
+
+
+void linear(int* out, const int* x, Matrix& w){ // matrix * vector 
+    for(int i=0; i<w.rows;i++){
+        int sum = vmul(w.at(i,0), x[0]);
+        for(int j=1; j<w.cols;j++){
+            sum = vadd(sum, vmul(w.at(i,j), x[j]));
+        }
+        out[i] = sum;
+    }
 }
 
-std::vector<Value*> softmax(const std::vector<Value*>& logits){
-    data_T max_val = logits[0]->data;
-    for (auto* v: logits) if (v->data > max_val) max_val = v->data;
-    std::vector<Value*> exps;
-    exps.reserve(logits.size()); //optimization
-    for (auto* v : logits) exps.push_back(exp(sub(v, make_value(max_val))));
-    Value* total = exps[0];
-    for (int i = 1; i<exps.size(); i++) total = add(total, exps[i]);
-    std::vector<Value*> out;
-    out.reserve(logits.size()); //optimization
-    for (auto* v : exps) out.push_back(div(v, total));
-    return out;
+void softmax(int* out, const int* logits, int logits_len){
+    data_T max_val = arena.data[logits[0]];
+    for (int i = 0; i < logits_len; i++) if (arena.data[logits[i]] > max_val) max_val = arena.data[logits[i]];
+    int exps[MAX_VOCAB_SIZE]; // indices of exps
+    for (int i = 0; i < logits_len; i++) exps[i] = vexp(sub_const(logits[i], max_val));
+    int total = exps[0];
+    for (int i = 1; i< logits_len; i++) total = vadd(total, exps[i]);
+    for (int i = 0; i < logits_len; i++) out[i] = vdiv(exps[i], total);
 }
 
-std::vector<Value*> rmsnorm(const std::vector<Value*>& x){
-    Value* total= mul(x[0], x[0]);
-    for (int i = 1; i < x.size(); i++) total = add(total, mul(x[i], x[i]));
-    total = div(total,make_value((data_T)x.size()));
-    Value* scale = pow(add(total,make_value(1e-5)), data_T{-0.5});
-    std::vector<Value*> out;
-    out.reserve(x.size()); //optimization
-    for (auto* xi : x) out.push_back(mul(xi, scale));
-    return out;
+void rmsnorm(int* out, const int* x, int x_len){
+    int total = vmul(x[0], x[0]);
+    for (int i = 1; i < x_len; i++) total = vadd(total, vmul(x[i], x[i]));
+    total = div_const(total, x_len);
+    int scale = vpow(add_const(total,1e-5), data_T{-0.5});
+    for (int i = 0; i < x_len; i++) out[i] = vmul(x[i], scale);
 }
 
-std::vector<Value*> gpt(
+
+void gpt(
+    int* logits_out,
     const int token_id, 
     const int pos_id,
-    KVCache& keys,
-    KVCache& values,
+    FlatKVCache& keys,
+    FlatKVCache& values,
     Model& state_dict){
-        std::vector<Value* > x; // joint token and position embedding
-        for (int j=0;j<state_dict.wte.cols;j++){
-            x.push_back(add(state_dict.wte(token_id, j), state_dict.wpe(pos_id, j)));
-        }
-        x = rmsnorm(x);
-        for (int li=0; li<N_LAYER;li++){
-            // 1. Multi-Head attention
-            std::vector<Value*> x_residual = x;
-            x = rmsnorm(x);
+        int x[N_EMBD]; // joint token and position embedding
+        int tmp[N_EMBD]; // tmp array for rmsnorm, since we can't do it in place
+        for (int j=0;j< N_EMBD;j++)
+            x[j] = vadd(state_dict.wte.at(token_id, j), state_dict.wpe.at(pos_id, j));
+        rmsnorm(tmp, x, N_EMBD);
+        std::memcpy(x, tmp, N_EMBD * sizeof(int));
 
-            std::vector<Value*> q = linear(x, state_dict.layers[li].attn_wq);
-            std::vector<Value*> k = linear(x, state_dict.layers[li].attn_wk);
-            std::vector<Value*> v = linear(x, state_dict.layers[li].attn_wv);
-            keys[li].push_back(k);
-            values[li].push_back(v);
-
-            std::vector<Value*> x_attn;
+        for (int i_layer=0; i_layer<N_LAYER;i_layer++){
+            // save residual
+            int x_residual[N_EMBD];
+            std::memcpy(x_residual, x, N_EMBD * sizeof(int));
+            // rmsnorm
+            rmsnorm(tmp, x, N_EMBD);
+            std::memcpy(x, tmp, N_EMBD * sizeof(int));
+            // Q, K, V
+            int q[N_EMBD], k[N_EMBD], v[N_EMBD];
+            linear(q, x, state_dict.layers[i_layer].attn_wq);
+            linear(k, x, state_dict.layers[i_layer].attn_wk);
+            linear(v, x, state_dict.layers[i_layer].attn_wv);
+            keys.push(i_layer, k);
+            values.push(i_layer, v);
+            // multi-head attention
+            int x_attn[N_EMBD];
+            int num_timesteps = keys.num_timesteps(i_layer);
             for(int h=0;h<N_HEAD;h++){
-                int hs = h*HEAD_DIM;
-                std::vector<Value*> q_h(q.begin() + hs, q.begin() + hs + HEAD_DIM);
-                std::vector<std::vector<Value*>> k_h, v_h;
-                for (int t = 0; t < keys[li].size(); t++) {
-                    k_h.emplace_back(keys[li][t].begin() + hs, keys[li][t].begin() + hs + HEAD_DIM);
-                    v_h.emplace_back(values[li][t].begin() + hs, values[li][t].begin() + hs + HEAD_DIM);
-                }
-                std::vector<Value*> attn_logits;
-                for (int t=0;t<k_h.size();t++){
-                    Value* sum = mul(q_h[0],k_h[t][0]);
+                int hs = h*HEAD_DIM; // starting index of the full N_EMBD vector for head
+
+                // computing attention dot(q_h, k_h[t]) / sqrt(head_dim)
+                int attention_logits[BLOCK_SIZE];
+                for (int t = 0; t < num_timesteps; t++) {
+                    int sum = vmul(q[hs],keys.get(i_layer, t, hs));
                     for (int j=1;j<HEAD_DIM;j++){
-                        sum = add(sum, mul(q_h[j],k_h[t][j]));
+                        sum = vadd(sum, vmul(q[hs+j],keys.get(i_layer, t, hs + j)));
                     }
-                    attn_logits.push_back(div(sum, make_value(SQRT_HEAD_DIM)));
+                    attention_logits[t] = mul_const(sum, INV_SQRT_HEAD_DIM)
                 }
-                std::vector<Value*> attn_weights = softmax(attn_logits);
-                std::vector<Value*> head_out;
+                // softmax
+                int attn_weights[BLOCK_SIZE];
+                softmax(attn_weights, attention_logits, num_timesteps);
+                
+                // weighted sum of values
                 for (int j=0;j<HEAD_DIM;j++){
-                    Value* sum = mul(attn_weights[0],v_h[0][j]);
-                    for (int t=1;t<v_h.size();t++){
-                        sum = add(sum,mul(attn_weights[t],v_h[t][j]));
+                    int sum = vmul(attn_weights[0], values.get(i_layer, 0, hs+ j));
+                    for (int t=1;t<num_timesteps;t++){
+                        sum = vadd(sum,vmul(attn_weights[t],values.get(i_layer, t, hs + j)));
                     }
-                    head_out.push_back(sum);
+                    x_attn[hs + j] = sum;
                 }
-                x_attn.insert(x_attn.end(), head_out.begin(), head_out.end()); //extend
             }
 
-            x = linear(x_attn, state_dict.layers[li].attn_wo);
-            for (int i = 0; i < x.size(); i++) {
-                x[i] = add(x[i], x_residual[i]);
+            // output projection
+            linear(x, x_attn, state_dict.layers[i_layer].attn_wo);
+
+            // residual connection
+            for (int i = 0; i < N_EMBD; i++) {
+                x[i] = vadd(x[i], x_residual[i]);
             }
-            // 2. MLP block
-            x_residual = x;
-            x = rmsnorm(x);
-            x = linear(x, state_dict.layers[li].mlp_fc1);
-            for (int i = 0; i < x.size(); i++) x[i] = relu(x[i]);
-            x = linear(x, state_dict.layers[li].mlp_fc2);
-            for (int i = 0; i < x.size(); i++) x[i] = add(x[i], x_residual[i]);
+            // MLP block
+            std::memcpy(x_residual, x, N_EMBD*sizeof(int));
+            rmsnorm(tmp, x, N_EMBD);
+            std::memcpy(x, tmp, N_EMBD * sizeof(int));
+
+            int mlp_hidden[4 * N_EMBD]; // since shape of mlp_fc1 is (4*N_EMBD, N_EMBD)
+            linear(mlp_hidden, x, state_dict.layers[i_layer].mlp_fc1);
+            for (int i = 0; i < 4 * N_EMBD; i++) x[i] = vrelu(x[i]);
+            linear(x, mlp_hidden,  state_dict.layers[i_layer].mlp_fc2);
+            for (int i = 0; i < N_EMBD; i++) x[i] = vadd(x[i], x_residual[i]);
         }
-        std::vector<Value*> logits = linear(x,state_dict.lm_head); 
-        return logits;
+        linear(logits_out, x, state_dict.lm_head); 
 }
 
 int main() {
