@@ -33,6 +33,7 @@ const data_T INV_SQRT_HEAD_DIM = 1.0 / std::sqrt((data_T)HEAD_DIM);
 constexpr int NO_CHILD = -1; // since children point to indices -> no child index = -1
 constexpr int MAX_VOCAB_SIZE = 27;
 
+int weights_end = 0;
 struct Arena{
     data_T* data; // pointer to data array
     grad_T* grad; // pointer to grad array
@@ -65,7 +66,7 @@ struct Arena{
         cap = new_cap;
     }
 
-    int size() const { return size; } // current arena next pointer
+    int get_size() const { return size; } // current arena next pointer
     inline void ensure() { if (size == cap) grow(); }
 
     void truncate(int n) { size = n; } // remove elements (ignore them) until size n
@@ -152,7 +153,7 @@ struct Matrix {
     int rows, cols;
 
     Matrix(int rows, int cols, float std=0.08) : rows(rows), cols(cols) {
-        data_start = arena.size(); // start at the current arena pointer
+        data_start = arena.get_size(); // start at the current arena pointer
         std::normal_distribution<data_T> dist(0.0, std);
         for (int i = 0; i < rows*cols; i++) arena.push_no_op(dist(rng));
     }
@@ -223,7 +224,7 @@ struct FlatKVCache{
     int n_layer, dim;
     int counts [N_LAYER] = {}; // timesteps per layer (max N_LAYER layers)
 
-    FlatKVCache(int n_layer, int d) : n_layer(n_layer), dim(dim) {
+    FlatKVCache(int n_layer, int d) : n_layer(n_layer), dim(d) {
         data.reserve(n_layer * BLOCK_SIZE * dim); // pre-alloc for up to BLOCK_SIZE timesteps (context length)
     }
 
@@ -321,7 +322,7 @@ void gpt(
                     for (int j=1;j<HEAD_DIM;j++){
                         sum = vadd(sum, vmul(q[hs+j],keys.get(i_layer, t, hs + j)));
                     }
-                    attention_logits[t] = mul_const(sum, INV_SQRT_HEAD_DIM)
+                    attention_logits[t] = mul_const(sum, INV_SQRT_HEAD_DIM);
                 }
                 // softmax
                 int attn_weights[BLOCK_SIZE];
@@ -351,7 +352,7 @@ void gpt(
 
             int mlp_hidden[4 * N_EMBD]; // since shape of mlp_fc1 is (4*N_EMBD, N_EMBD)
             linear(mlp_hidden, x, state_dict.layers[i_layer].mlp_fc1);
-            for (int i = 0; i < 4 * N_EMBD; i++) x[i] = vrelu(x[i]);
+            for (int i = 0; i < 4 * N_EMBD; i++) mlp_hidden[i] = vrelu(mlp_hidden[i]);
             linear(x, mlp_hidden,  state_dict.layers[i_layer].mlp_fc2);
             for (int i = 0; i < N_EMBD; i++) x[i] = vadd(x[i], x_residual[i]);
         }
