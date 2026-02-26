@@ -359,12 +359,13 @@ void gpt(
 }
 
 int main() {
-    // reserve the number of values in arena, so that data is stored contiguously without moving (faster backward pass using Wengert tape)
-    // alternative: use deque for arena and remove the following reserve line 
-    arena.reserve(200000);
+    arena.init(MAX_VOCAB_SIZE * N_EMBD * 3 // accounting for wte, wpe, lm_head
+        + N_LAYER * (4 * N_EMBD * N_EMBD + 4 * N_EMBD * N_EMBD) // accounting for attention heads and linear fc layers
+    ); // it will grow automatically, this is just a hint to avoid a couple of realloc at the start
+
     if (!std::filesystem::exists("input.txt")){
         LOG("Downloading input.txt ...");
-        system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt");
+         if (system("wget -q -O input.txt https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt") != 0) LOG("Download failed");
     }
     std::vector<std::string> docs;
     std::ifstream file("input.txt");
@@ -374,16 +375,25 @@ int main() {
     } 
     std::shuffle(docs.begin(), docs.end(), rng);
     LOG("We have "<<docs.size()<<" names.");
+
     std::set<char> uchars{};
-    for (auto& name: docs){
-        uchars.insert(name.begin(), name.end());
-    }
+    for (auto& name: docs) uchars.insert(name.begin(), name.end());
     int BOS = uchars.size(); // token id for a special Beginning of Sequence (BOS) token
     int vocab_size = uchars.size()+1;
     LOG("Vocab size is: "<<vocab_size);
+    if (vocab_size > MAX_VOCAB_SIZE) {
+        throw std::runtime_error("vocab_size (" + std::to_string(vocab_size) + ") exceeds MAX_VOCAB_SIZE (" + std::to_string(MAX_VOCAB_SIZE) + ")");
+    }
+
+    // build char lookup
+    std::vector<char> idx_to_char(uchars.begin(), uchars.end());
+    int char_to_idx[256] = {}; // to cover all ASCII
+    { int idx = 0; for (char c : uchars) char_to_idx[(unsigned char)c] = idx++; } // reverse idx_to_char to char_to_udx
+
     
     Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
-    std::vector<Value*> params = state_dict.params();
+    weights_end = arena.get_size();
+    std::vector<int> params = state_dict.params();
     LOG("Number of params: "<<params.size());
 
     float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
@@ -395,28 +405,30 @@ int main() {
     for (int step=0; step< num_steps; step++){
         // Take a document, tokenize it, surround it by BOS tokens
         std::string doc = docs[step%docs.size()];
-        std::vector<int> tokens;
-        tokens.push_back(BOS);
-        for (char ch:doc){
-            tokens.push_back(std::distance(uchars.begin(), uchars.find(ch)));
-        }
-        tokens.push_back(BOS);
-        int n = std::min(BLOCK_SIZE, (int)tokens.size() - 1);
+        int tokens[BLOCK_SIZE+2]; // context + 2 BOS
+        int token_len = 0;
+        tokens[token_len++] = BOS;
+        for (char ch:doc){ tokens[token_len++] = char_to_idx[(unsigned char)ch]; }
+        tokens[token_len++] = BOS;
+        int n = std::min(BLOCK_SIZE, token_len - 1);
 
-        // Forward tokens through the model
-        KVCache keys(N_LAYER), values(N_LAYER);
-        std::vector<Value*> losses{};
+        //forward tokens through the model
+        FlatKVCache keys(N_LAYER, N_EMBD), values(N_LAYER, N_EMBD);
+        int losses[BLOCK_SIZE];
+        int n_losses = 0;
         for (int pos_id=0; pos_id<n;pos_id++){
             int token_id = tokens[pos_id];
             int target_id = tokens[pos_id+1];
-            std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
-            std::vector<Value*> probs = softmax(logits);
-            Value* loss_t = neg(log(probs[target_id]));
-            losses.push_back(loss_t);
+            int logits[MAX_VOCAB_SIZE];
+            gpt(logits, token_id, pos_id, keys, values, state_dict);
+            int probs[MAX_VOCAB_SIZE];
+            softmax(probs, logits, vocab_size);
+            losses[n_losses++] = vneg(vlog(probs[target_id]));
         }
-        Value* total_losses = losses[0]; 
-        for (int i = 1; i<losses.size();i++) total_losses = add(total_losses, losses[i]);
-        Value* loss = mul(total_losses, make_value(1.0 / n));
+
+        int total_losses = losses[0]; 
+        for (int i = 1; i<n_losses;i++) total_losses = vadd(total_losses, losses[i]);
+        int loss = mul_const(total_losses, 1.0/n);
 
         // backward pass
         backward(loss);
@@ -426,44 +438,44 @@ int main() {
         double beta1_pow = std::pow(beta1,(step + 1));
         double beta2_pow = std::pow(beta2,(step + 1));
         for (int i = 0;i<params.size();i++){
-            Value* p = params[i];
-            m[i] = beta1 * m[i] + (1 - beta1) * p->grad;
-            v[i] = beta2 * v[i] + (1 - beta2) * p->grad * p->grad;
+            int i_p = params[i]; // parameter index
+            grad_T p_grad = arena.grad[i_p]; // parameter gradient
+            m[i] = beta1 * m[i] + (1 - beta1) * p_grad;
+            v[i] = beta2 * v[i] + (1 - beta2) * p_grad * p_grad;
             grad_T m_hat = m[i] / (1 - beta1_pow);
             grad_T v_hat = v[i] / (1 - beta2_pow);
-            p->data -= lr_t*m_hat / (std::sqrt(v_hat)+eps_adam);
-            p->grad = 0;
+            arena.data[i_p] -= lr_t*m_hat / (std::sqrt(v_hat)+eps_adam);
         }
-        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< loss->data);
-        LOG("Arena size: " << arena.size());
-
-        arena.clear(); // Clear memory after the end of backprop
+        LOG("Step "<<(step+1)<<" / "<<num_steps<<" | loss "<< arena.data[loss]);
+        LOG("Arena size: " << arena.get_size());
+        arena.truncate(weights_end); // clean until end of weights values
+        arena.zero_grad(weights_end);
     }
 
     float temperature = 0.5;
     LOG("\n\nTime for inference---------------");
-    std::vector<char> idx_to_char(uchars.begin(), uchars.end());
     for (int sample_idx = 0; sample_idx<20;sample_idx++){
-        KVCache keys(N_LAYER), values(N_LAYER);
+        FlatKVCache keys(N_LAYER, N_EMBD), values(N_LAYER, N_EMBD);
         int token_id = BOS;
         std::vector<char> samples;
         for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
-            std::vector<Value*> logits = gpt(token_id, pos_id, keys, values, state_dict);
-            for (int i = 0; i < logits.size(); i++)
-                logits[i] = div(logits[i],make_value(temperature));
-            std::vector<Value*> probs = softmax(logits);
-            std::vector<double> weights;
-            for (auto& p : probs) weights.push_back(p->data);
-            std::discrete_distribution<int> dist(weights.begin(), weights.end());
+            int logits[MAX_VOCAB_SIZE];
+            gpt(logits, token_id, pos_id, keys, values, state_dict);
+            for (int i = 0; i < vocab_size; i++)
+                logits[i] = mul_const(logits[i],1.0/temperature);
+            int probs[MAX_VOCAB_SIZE];
+            softmax(probs, logits, vocab_size);
+
+            data_T weights[MAX_VOCAB_SIZE];
+            for (int i = 0; i < vocab_size; i++) weights[i] = arena.data[probs[i]];
+            std::discrete_distribution<int> dist(weights, weights + vocab_size);
             token_id = dist(rng);
-            if (token_id == BOS){
-                break;
-            }
+            if (token_id == BOS) break;
             samples.push_back(idx_to_char[token_id]);
         }
         std::string result(samples.begin(), samples.end());
         LOG("Sample: "<< sample_idx<<": "<<result);
-        arena.clear(); // Clear memory after the end of inference pass
+        arena.truncate(weights_end); // clean until end of weights values
     }
     return 0;
 }
