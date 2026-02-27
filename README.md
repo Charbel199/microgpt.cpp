@@ -13,6 +13,8 @@ g++ -std=c++17 -O3 -DDEBUG microgpt.cpp -o microgpt
 
 You can remove `-DDEBUG` for slightly faster execution.
 
+Adding `-march=native -ffast-math` can squeeze out another couple of % (haven't fully tested that yet).
+
 # Performance
 
 Andrej Karpathy's [microgpt.py](https://gist.github.com/karpathy/8627fe009c40f57531cb18360106ce95) was never meant to be fast, its goal is extreme readability and making it easy to learn how a GPT works from scratch. This C++ version focuses on optimization while remaining reasonably readable (barely at this point), because optimization is fun.
