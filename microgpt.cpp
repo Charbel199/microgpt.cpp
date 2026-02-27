@@ -1,17 +1,16 @@
-#include <iostream>
-#include <vector>
-#include <cmath>
-#include <set>
-#include <unordered_set>
 #include <algorithm>
-#include <functional>
-#include <random>
-#include <fstream>
-#include <string>
-#include <filesystem>
+#include <cassert>
+#include <cfloat>
+#include <cmath>
 #include <cstdlib>
-#include <deque>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <random>
+#include <set>
+#include <string>
+#include <vector>
 
 #ifdef DEBUG
 #define LOG(msg) std::cerr << "[LOG] " << msg << std::endl
@@ -19,7 +18,136 @@
 #define LOG(msg)
 #endif
 
-std::mt19937 rng(42); //random seed
+typedef std::mersenne_twister_engine<
+    uint32_t,
+    32, 624, 397, 31,
+    0x9908b0dfUL, 11,
+    0xffffffffUL, 7,
+    0x9d2c5680UL, 15,
+    0xefc60000UL, 18, 1812433253UL> python_mt19937;
+
+// Python's specific seeding algorithm
+template<>
+void python_mt19937::seed(uint32_t seed) {
+    // > init_by_array
+    // > init_genrand
+    _M_x[0] = 19650218U;
+    for (_M_p = 1; _M_p < state_size; ++_M_p) {
+        _M_x[_M_p] = (1812433253U * (_M_x[_M_p-1] ^ (_M_x[_M_p-1] >> 30)) + _M_p);
+    }
+    // < init_genrand
+    size_t i = 1;
+    for (size_t k = state_size; k; --k) {
+        _M_x[i] = (_M_x[i] ^ ((_M_x[i-1] ^ (_M_x[i-1] >> 30)) * 1664525U)) + seed;
+        i++;
+        if (i >= state_size) {
+            _M_x[0] = _M_x[state_size-1];
+            i = 1;
+        }
+    }
+    for (size_t k = state_size-1; k; --k) {
+        _M_x[i] = (_M_x[i] ^ ((_M_x[i-1] ^ (_M_x[i-1] >> 30)) * 1566083941U)) - i;
+        i++;
+        if (i >= state_size) {
+            _M_x[0] = _M_x[state_size-1];
+            i = 1;
+        }
+    }
+    _M_x[0] = 0x80000000U;
+    // < init_by_array
+}
+
+class PythonRandom
+{
+private:
+    python_mt19937 rng;
+    double gauss_next;
+
+private:
+    inline unsigned bit_width(unsigned x)
+    {
+        if (x == 0) return 0;
+        unsigned bits = 0;
+        while (x >>= 1) {
+            bits++;
+        }
+        return bits + 1;
+    };
+
+    unsigned randbelow(const unsigned n) {
+        if (n == 0) return 0;
+
+        unsigned k = bit_width(n);
+        unsigned r = getrandbits(k);
+        while (r >= n) {
+            r = getrandbits(k);
+        }
+        return r;
+    }
+
+public:
+    PythonRandom(unsigned seed)
+        : rng(seed)
+        , gauss_next(DBL_MAX)
+    {}
+
+    double random() {
+        uint32_t a = rng() >> 5;  // Top 27 bits
+        uint32_t b = rng() >> 6;  // Top 26 bits
+        uint64_t value = (static_cast<uint64_t>(a) << 26) ^ b;
+        return static_cast<double>(value) / (1ULL << 53);
+    }
+
+    unsigned getrandbits(const unsigned k) {
+        assert(k <= 32);
+        return rng() >> (32 - k);
+    }
+
+    template<typename T>
+    void shuffle(std::vector<T> &vec) {
+        for (unsigned i = vec.size() - 1; i > 0; --i) {
+            int j = randbelow(i + 1);
+            std::swap(vec[i], vec[j]);
+        }
+    }
+
+    double gauss(const double mu, const double sigma) {
+        double z = gauss_next;
+        gauss_next = DBL_MAX;
+
+        if (z == DBL_MAX) {
+            double x2pi = random() * 2.0 * M_PI;
+            double g2rad = std::sqrt(-2.0 * std::log(1.0 - random()));
+            z = std::cos(x2pi) * g2rad;
+            gauss_next = std::sin(x2pi) * g2rad;
+        }
+
+        return mu + z * sigma;
+    }
+
+    std::vector<unsigned> choices(const double *weights_ptr, const unsigned weights_count, const unsigned k = 1) {
+        std::vector<double> cum_weights(weights_count);
+        double acc = 0.0;
+        for (unsigned i = 0; i < weights_count; ++i) {
+            acc += weights_ptr[i];
+            cum_weights[i] = acc;
+        }
+
+        double total = cum_weights.back();
+        assert(total > 0);
+
+        std::vector<unsigned> res;
+        res.reserve(k);
+        for (unsigned i = 0; i < k; ++i) {
+            double choice = random() * total;
+            auto bin = std::lower_bound(cum_weights.begin(), cum_weights.end(), choice);
+            res.push_back(std::distance(cum_weights.begin(), bin));
+        }
+        return res;
+    }
+};
+
+PythonRandom rng(42); //random seed
 using data_T = double;
 using grad_T = double;
 
@@ -71,9 +199,9 @@ struct Arena{
     inline void ensure() { if (size == cap) grow(); }
 
     void truncate(int n) { size = n; } // remove elements (ignore them) until size n
-    
+
     void zero_grad(int n) { std::memset(grad, 0, n * sizeof(grad_T)); }
-    
+
     inline int push_no_op(data_T d){
         ensure();
         int i = size++;
@@ -93,7 +221,7 @@ struct Arena{
         local_grad0[i] = g; local_grad1[i] = 0;
         return i;
     }
-    
+
     inline int push_binary_op(data_T d, int i_c0, grad_T g0, int i_c1, grad_T g1){
         ensure();
         int i = size++;
@@ -155,8 +283,7 @@ struct Matrix {
 
     Matrix(int rows, int cols, float std=0.08) : rows(rows), cols(cols) {
         data_start = arena.get_size(); // start at the current arena pointer
-        std::normal_distribution<data_T> dist(0.0, std);
-        for (int i = 0; i < rows*cols; i++) arena.push_no_op(dist(rng));
+        for (int i = 0; i < rows*cols; i++) arena.push_no_op(rng.gauss(0,std));
     }
 
     int at(int i, int j) const { return data_start + i * cols + j;}
@@ -165,7 +292,7 @@ struct Layer {
     Matrix attn_wq, attn_wk, attn_wv, attn_wo;
     Matrix mlp_fc1, mlp_fc2;
 
-    Layer(int n_embd) : 
+    Layer(int n_embd) :
         attn_wq(n_embd, n_embd),
         attn_wk(n_embd, n_embd),
         attn_wv(n_embd, n_embd),
@@ -253,7 +380,7 @@ struct FlatKVCache{
 };
 
 
-void linear(int* out, const int* x, Matrix& w){ // matrix * vector 
+void linear(int* out, const int* x, Matrix& w){ // matrix * vector
     for(int i=0; i<w.rows;i++){
         int sum = vmul(w.at(i,0), x[0]);
         for(int j=1; j<w.cols;j++){
@@ -284,7 +411,7 @@ void rmsnorm(int* out, const int* x, int x_len){
 
 void gpt(
     int* logits_out,
-    const int token_id, 
+    const int token_id,
     const int pos_id,
     FlatKVCache& keys,
     FlatKVCache& values,
@@ -328,7 +455,7 @@ void gpt(
                 // softmax
                 int attn_weights[BLOCK_SIZE];
                 softmax(attn_weights, attention_logits, num_timesteps);
-                
+
                 // weighted sum of values
                 for (int j=0;j<HEAD_DIM;j++){
                     int sum = vmul(attn_weights[0], values.get(i_layer, 0, hs+ j));
@@ -357,7 +484,7 @@ void gpt(
             linear(x, mlp_hidden,  state_dict.layers[i_layer].mlp_fc2);
             for (int i = 0; i < N_EMBD; i++) x[i] = vadd(x[i], x_residual[i]);
         }
-        linear(logits_out, x, state_dict.lm_head); 
+        linear(logits_out, x, state_dict.lm_head);
 }
 
 int main() {
@@ -374,8 +501,8 @@ int main() {
     std::string line;
     while (std::getline(file, line)) {
         if (!line.empty()) docs.push_back(line);
-    } 
-    std::shuffle(docs.begin(), docs.end(), rng);
+    }
+    rng.shuffle(docs);
     LOG("We have "<<docs.size()<<" names.");
 
     std::set<char> uchars{};
@@ -392,7 +519,7 @@ int main() {
     int char_to_idx[256] = {}; // to cover all ASCII
     { int idx = 0; for (char c : uchars) char_to_idx[(unsigned char)c] = idx++; } // reverse idx_to_char to char_to_udx
 
-    
+
     Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
     weights_end = arena.get_size();
     std::vector<int> params = state_dict.params();
@@ -401,7 +528,6 @@ int main() {
     float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
     std::vector<double> m(params.size(), 0.0);
     std::vector<double> v(params.size(), 0.0);
-    int NUM_STEPS = 1000;
 
     // training loop
     for (int step=0; step< NUM_STEPS; step++){
@@ -428,7 +554,7 @@ int main() {
             losses[n_losses++] = vneg(vlog(probs[target_id]));
         }
 
-        int total_losses = losses[0]; 
+        int total_losses = losses[0];
         for (int i = 1; i<n_losses;i++) total_losses = vadd(total_losses, losses[i]);
         int loss = mul_const(total_losses, 1.0/n);
 
@@ -470,8 +596,7 @@ int main() {
 
             data_T weights[MAX_VOCAB_SIZE];
             for (int i = 0; i < vocab_size; i++) weights[i] = arena.data[probs[i]];
-            std::discrete_distribution<int> dist(weights, weights + vocab_size);
-            token_id = dist(rng);
+            token_id = rng.choices(weights, vocab_size)[0];
             if (token_id == BOS) break;
             samples.push_back(idx_to_char[token_id]);
         }
