@@ -31,7 +31,7 @@ _Note: 16x16 = N_EMBD=16, BLOCK_SIZE=16_
 | Python (PyPy JIT) | 3m 16s | 1x |
 | [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) | 3.3s | **~60x** |
 | [Rust](https://github.com/mplekh/rust-microgpt) | 2.9s | **~68x** |
-| C++ (enhanced) | 2.2s | **~89x** |
+| C++ (enhanced) | 2.1s | **~94x** |
 
 ### 64x64 network, 1000 steps
 
@@ -41,7 +41,7 @@ _Note: 16x16 = N_EMBD=16, BLOCK_SIZE=16_
 | Python (PyPy JIT) | 6m 47s | 1x |
 | [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) | 8.2s | **~50x** |
 | [Rust](https://github.com/mplekh/rust-microgpt) | 4.8s | **~85x** |
-| C++ (enhanced) | 2.9s | **~140x** |
+| C++ (enhanced) | 3.3s | **~123x** |
 
 _C++ compiled with `g++ -std=c++17 -O3`. PyPy benchmarked with [PyPy 7.3.17](https://pypy.org/download.html). Rust compilation profile:_
 
