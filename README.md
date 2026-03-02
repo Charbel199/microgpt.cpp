@@ -59,3 +59,7 @@ C++ (enhanced) is the most performant but requires the most optimization effort.
 ### Rust
 
 The [rust implementation](https://github.com/mplekh/rust-microgpt) is already faster than C++ (original) out of the box. The remaining gap vs C++ (enhanced) comes from bounds checking on every `Vec::push`, which the C++ version avoids through a pre-allocated arena.
+
+---
+
+_For a version that replicates Python's random numbers for an exact match of the original Python output, see [this branch](https://github.com/AntonTimofeev/microgpt.cpp/tree/use_python_random)._
