@@ -34,14 +34,22 @@ constexpr int NO_CHILD = -1; // since children point to indices -> no child inde
 constexpr int MAX_VOCAB_SIZE = 27;
 constexpr int NUM_STEPS = 1000;
 
+// we want to avoid storing 2 grad_T (with doubles = 2*8 bytes = 16 bytes) for every element, 
+// instead we will store one uint8 op per element (only 1 byte) and compute the local grad on the fly in backward() based on the op type and the values of the children
+// this should lead to better performance because we are currently memory bound
+// Note: Also added a Fused Multiply Add op (FMA)
+enum Op : uint8_t { OP_CONST, OP_ADD, OP_MUL, OP_DIV, OP_NEG, OP_LOG, OP_EXP, OP_RELU, OP_INV_SQRT, OP_INV_LOG, OP_SUB_CONST, OP_MUL_CONST, OP_DIV_CONST, OP_FMA };
+
+
+
 int weights_end = 0;
 struct Arena{
     data_T* data; // pointer to data array
     grad_T* grad; // pointer to grad array
     int* i_child0; // pointer to first child index array
     int* i_child1; // pointer to second child index array
-    grad_T* local_grad0; // pointer to first local grad array
-    grad_T* local_grad1; // pointer to second local grad array
+    int* i_child2; // pointer to third child index array (for fused ops, currently only FMA)
+    Op* op; // pointer to the operation type
 
     int size = 0; // current number of elements in the arena per array (num of data = num of grad = ...)
     int cap = 0; // maximum size (number of elements) our arena can handle at the moment PER ARRAY
@@ -52,8 +60,8 @@ struct Arena{
         grad = (grad_T*)std::malloc(n * sizeof(grad_T));
         i_child0 = (int*)std::malloc(n * sizeof(int));
         i_child1 = (int*)std::malloc(n * sizeof(int));
-        local_grad0 = (grad_T*)std::malloc(n * sizeof(grad_T));
-        local_grad1 = (grad_T*)std::malloc(n * sizeof(grad_T));
+        i_child2 = (int*)std::malloc(n * sizeof(int));
+        op = (Op*)std::malloc(n * sizeof(Op));
     }
 
     void grow(){ // double memory allocation for all arrays (Since they grow in parallel)
@@ -62,8 +70,8 @@ struct Arena{
         grad = (grad_T*)std::realloc(grad, new_cap * sizeof(grad_T));
         i_child0 = (int*)std::realloc(i_child0, new_cap * sizeof(int));
         i_child1 = (int*)std::realloc(i_child1, new_cap * sizeof(int));
-        local_grad0 = (grad_T*)std::realloc(local_grad0, new_cap * sizeof(grad_T));
-        local_grad1 = (grad_T*)std::realloc(local_grad1, new_cap * sizeof(grad_T));
+        i_child2 = (int*)std::realloc(i_child2, new_cap * sizeof(int));
+        op = (Op*)std::realloc(op, new_cap * sizeof(Op));
         cap = new_cap;
     }
 
@@ -78,36 +86,32 @@ struct Arena{
         ensure();
         int i = size++;
         data[i] = d;
-        grad[i] = 0;
-        i_child0[i] = NO_CHILD; i_child1[i] = NO_CHILD;
-        local_grad0[i] = 0; local_grad1[i] = 0;
+        op[i] = OP_CONST;
         return i;
     }
 
-    inline int push_unary_op(data_T d, int i_c, grad_T g){
+    inline int push_unary_op(data_T d, int i_c, Op o){
         ensure();
         int i = size++;
         data[i] = d;
-        grad[i] = 0;
-        i_child0[i] = i_c; i_child1[i] = NO_CHILD;
-        local_grad0[i] = g; local_grad1[i] = 0;
+        i_child0[i] = i_c;
+        op[i] = o;
         return i;
     }
     
-    inline int push_binary_op(data_T d, int i_c0, grad_T g0, int i_c1, grad_T g1){
+    inline int push_binary_op(data_T d, int i_c0, int i_c1, Op o){
         ensure();
         int i = size++;
         data[i] = d;
-        grad[i] = 0;
         i_child0[i] = i_c0; i_child1[i] = i_c1;
-        local_grad0[i] = g0; local_grad1[i] = g1;
+        op[i] = o;
         return i;
     }
 
     void cleanup(){
         std::free(data); std::free(grad);
-        std::free(i_child0); std::free(i_child1);
-        std::free(local_grad0); std::free(local_grad1);
+        std::free(i_child0); std::free(i_child1); std::free(i_child2);
+        std::free(op);
     }
 };
 
@@ -390,7 +394,7 @@ int main() {
     // build char lookup
     std::vector<char> idx_to_char(uchars.begin(), uchars.end());
     int char_to_idx[256] = {}; // to cover all ASCII
-    { int idx = 0; for (char c : uchars) char_to_idx[(unsigned char)c] = idx++; } // reverse idx_to_char to char_to_udx
+    { int idx = 0; for (char c : uchars) char_to_idx[(unsigned char)c] = idx++; } // reverse idx_to_char to char_to_idx
 
     
     Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
