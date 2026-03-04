@@ -295,44 +295,14 @@ keys[layer][timestep][dimension]
 key = [k0, k1, k2, k3,   k4, k5, k6, k7,   k8, k9, k10, k11,   k12, k13, k14, k15]
        --- head 0 -----  ---- head 1 ----  ---- head 2 -----   ----- head 3 -----
 */
-struct FlatKVCache{
-    std::vector<int> data; // indices to find the values we need
-    int n_layer, dim;
-    int counts [N_LAYER] = {}; // timesteps per layer (max N_LAYER layers)
-
-    FlatKVCache(int n_layer, int d) : n_layer(n_layer), dim(d) {
-        data.reserve(n_layer * BLOCK_SIZE * dim); // pre-alloc for up to BLOCK_SIZE timesteps (context length)
-    }
-
-    void push(int i_layer, const int* vals){
-        int base = 0;
-        for (int l = 0; l < i_layer; l++) base += counts[l] * dim; // skip past all time steps for all previous layers
-        base += counts[i_layer] * dim; // skip past this existing time steps for this layer
-        // insert at the right position
-        data.insert(data.begin() + base, vals, vals + dim);
-        counts[i_layer]++; // we are now at the next time step for layer: i_layer
-    }
-
-    int get(int i_layer, int t, int d){
-        int base = 0;
-        for (int l = 0; l < i_layer; l++) base += counts[l] * dim;
-        return data[base + t * dim + d];
-    }
-
-    int num_timesteps(int i_layer) const { return counts[i_layer]; }
-
-    void clear() {
-        data.clear();
-        std::memset(counts, 0, sizeof(counts));
-    }
-};
+using KVCache = int[N_LAYER][BLOCK_SIZE][N_EMBD]; // fully stack allocated fixed-size 3D array
 
 
 void linear(int* out, const int* x, Matrix& w){ // matrix * vector 
     for(int i=0; i<w.rows;i++){
         int sum = vmul(w.at(i,0), x[0]);
         for(int j=1; j<w.cols;j++){
-            sum = vadd(sum, vmul(w.at(i,j), x[j]));
+            sum = vmul_add(w.at(i,j), x[j], sum);
         }
         out[i] = sum;
     }
@@ -350,9 +320,9 @@ void softmax(int* out, const int* logits, int logits_len){
 
 void rmsnorm(int* out, const int* x, int x_len){
     int total = vmul(x[0], x[0]);
-    for (int i = 1; i < x_len; i++) total = vadd(total, vmul(x[i], x[i]));
+    for (int i = 1; i < x_len; i++) total = vmul_add(x[i], x[i], total);
     total = div_const(total, x_len);
-    int scale = vpow(add_const(total,1e-5), data_T{-0.5});
+    int scale = vinv_sqrt(total);
     for (int i = 0; i < x_len; i++) out[i] = vmul(x[i], scale);
 }
 
@@ -361,8 +331,8 @@ void gpt(
     int* logits_out,
     const int token_id, 
     const int pos_id,
-    FlatKVCache& keys,
-    FlatKVCache& values,
+    KVCache& keys,
+    KVCache& values,
     Model& state_dict){
         int x[N_EMBD]; // joint token and position embedding
         int tmp[N_EMBD]; // tmp array for rmsnorm, since we can't do it in place
@@ -383,20 +353,20 @@ void gpt(
             linear(q, x, state_dict.layers[i_layer].attn_wq);
             linear(k, x, state_dict.layers[i_layer].attn_wk);
             linear(v, x, state_dict.layers[i_layer].attn_wv);
-            keys.push(i_layer, k);
-            values.push(i_layer, v);
+            std::memcpy(keys[i_layer][pos_id], k, N_EMBD * sizeof(int)); // copying this 'keys' chunk into our kvcache on the stack array
+            std::memcpy(values[i_layer][pos_id], v, N_EMBD * sizeof(int)); // copying this 'values' chunk into our kvcache on the stack array
+            int num_timesteps = pos_id + 1;
             // multi-head attention
             int x_attn[N_EMBD];
-            int num_timesteps = keys.num_timesteps(i_layer);
             for(int h=0;h<N_HEAD;h++){
                 int hs = h*HEAD_DIM; // starting index of the full N_EMBD vector for head
 
                 // computing attention dot(q_h, k_h[t]) / sqrt(head_dim)
                 int attention_logits[BLOCK_SIZE];
                 for (int t = 0; t < num_timesteps; t++) {
-                    int sum = vmul(q[hs],keys.get(i_layer, t, hs));
+                    int sum = vmul(q[hs], keys[i_layer][t][hs]);
                     for (int j=1;j<HEAD_DIM;j++){
-                        sum = vadd(sum, vmul(q[hs+j],keys.get(i_layer, t, hs + j)));
+                        sum = vmul_add(q[hs+j], keys[i_layer][t][hs+j], sum);
                     }
                     attention_logits[t] = mul_const(sum, INV_SQRT_HEAD_DIM);
                 }
@@ -406,9 +376,9 @@ void gpt(
                 
                 // weighted sum of values
                 for (int j=0;j<HEAD_DIM;j++){
-                    int sum = vmul(attn_weights[0], values.get(i_layer, 0, hs+ j));
+                    int sum = vmul(attn_weights[0], values[i_layer][0][hs+j]);
                     for (int t=1;t<num_timesteps;t++){
-                        sum = vadd(sum,vmul(attn_weights[t],values.get(i_layer, t, hs + j)));
+                        sum = vmul_add(attn_weights[t], values[i_layer][t][hs+j], sum);
                     }
                     x_attn[hs + j] = sum;
                 }
@@ -474,9 +444,8 @@ int main() {
     LOG("Number of params: "<<params.size());
 
     float learning_rate = 0.01, beta1 = 0.85, beta2 = 0.99, eps_adam = 1e-8;
-    std::vector<double> m(params.size(), 0.0);
-    std::vector<double> v(params.size(), 0.0);
-    int NUM_STEPS = 1000;
+    std::vector<float> m(params.size(), 0.0f);
+    std::vector<float> v(params.size(), 0.0f);
 
     // training loop
     for (int step=0; step< NUM_STEPS; step++){
@@ -490,7 +459,7 @@ int main() {
         int n = std::min(BLOCK_SIZE, token_len - 1);
 
         //forward tokens through the model
-        FlatKVCache keys(N_LAYER, N_EMBD), values(N_LAYER, N_EMBD);
+        KVCache keys = {}, values = {};
         int losses[BLOCK_SIZE];
         int n_losses = 0;
         for (int pos_id=0; pos_id<n;pos_id++){
@@ -500,7 +469,7 @@ int main() {
             gpt(logits, token_id, pos_id, keys, values, state_dict);
             int probs[MAX_VOCAB_SIZE];
             softmax(probs, logits, vocab_size);
-            losses[n_losses++] = vneg(vlog(probs[target_id]));
+            losses[n_losses++] = vinv_log(probs[target_id]);
         }
 
         int total_losses = losses[0]; 
@@ -512,8 +481,8 @@ int main() {
 
         // adam optimizer
         float lr_t = learning_rate*(1-(double)step/NUM_STEPS);
-        double beta1_pow = std::pow(beta1,(step + 1));
-        double beta2_pow = std::pow(beta2,(step + 1));
+        data_T beta1_pow = std::pow(beta1,(step + 1));
+        data_T beta2_pow = std::pow(beta2,(step + 1));
         for (int i = 0;i<params.size();i++){
             int i_p = params[i]; // parameter index
             grad_T p_grad = arena.grad[i_p]; // parameter gradient
@@ -532,7 +501,7 @@ int main() {
     float temperature = 0.5;
     LOG("\n\nTime for inference---------------");
     for (int sample_idx = 0; sample_idx<20;sample_idx++){
-        FlatKVCache keys(N_LAYER, N_EMBD), values(N_LAYER, N_EMBD);
+        KVCache keys = {}, values = {};
         int token_id = BOS;
         std::vector<char> samples;
         for (int pos_id = 0;pos_id<BLOCK_SIZE;pos_id++){
