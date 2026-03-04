@@ -2,15 +2,12 @@
 #include <vector>
 #include <cmath>
 #include <set>
-#include <unordered_set>
 #include <algorithm>
-#include <functional>
 #include <random>
 #include <fstream>
 #include <string>
 #include <filesystem>
 #include <cstdlib>
-#include <deque>
 #include <cstring>
 
 #ifdef DEBUG
@@ -30,7 +27,6 @@ constexpr int BLOCK_SIZE = 16;
 constexpr int N_HEAD = 4;
 constexpr int HEAD_DIM = N_EMBD / N_HEAD;
 const data_T INV_SQRT_HEAD_DIM = 1.0 / std::sqrt((data_T)HEAD_DIM);
-constexpr int NO_CHILD = -1; // since children point to indices -> no child index = -1
 constexpr int MAX_VOCAB_SIZE = 27;
 constexpr int NUM_STEPS = 1000;
 
