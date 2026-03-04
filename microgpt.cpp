@@ -440,6 +440,7 @@ int main() {
     
     Model state_dict(vocab_size, N_EMBD, BLOCK_SIZE, N_LAYER);
     weights_end = arena.get_size();
+    arena.zero_grad(weights_end); // zero weight grads before first backward
     std::vector<int> params = state_dict.params();
     LOG("Number of params: "<<params.size());
 
