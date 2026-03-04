@@ -7,13 +7,11 @@ The focus is on readability (and optimization) rather than minimizing line count
 # Build & Run
 
 ```
-g++ -std=c++17 -O3 -DDEBUG microgpt.cpp -o microgpt
+g++ -std=c++17 -DDEBUG -Ofast -march=native microgpt.cpp -o microgpt
 ./microgpt
 ```
 
-You can remove `-DDEBUG` for slightly faster execution.
-
-Adding `-march=native -ffast-math` can squeeze out another couple of % (haven't fully tested that yet).
+You can remove `-DDEBUG` for slightly faster execution. For maximum performance:
 
 # Performance
 
@@ -30,8 +28,9 @@ _Note: 16x16 = N_EMBD=16, BLOCK_SIZE=16_
 | Python (CPython) | 22m 4s | ~6.7x slower |
 | Python (PyPy JIT) | 3m 16s | 1x |
 | [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) | 3.3s | **~60x** |
-| [Rust](https://github.com/mplekh/rust-microgpt) | 2.9s | **~68x** |
-| C++ (enhanced) | 2.1s | **~94x** |
+| [C++ (enhanced)](https://github.com/Charbel199/microgpt.cpp/blob/88022beee52dc0f04b7285aea65f27822a5a0e74) | 2.2s | **~88x** |
+| [Rust](https://github.com/mplekh/rust-microgpt) | 2.0s | **~97x** |
+| C++ (current) | 1.3s | **~152x** |
 
 ### 64x64 network, 1000 steps
 
@@ -40,28 +39,28 @@ _Note: 16x16 = N_EMBD=16, BLOCK_SIZE=16_
 | Python (CPython) | 1h 14m | ~10.9x slower |
 | Python (PyPy JIT) | 6m 47s | 1x |
 | [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) | 8.2s | **~50x** |
-| [Rust](https://github.com/mplekh/rust-microgpt) | 4.8s | **~85x** |
-| C++ (enhanced) | 3.3s | **~123x** |
+| [C++ (enhanced)](https://github.com/Charbel199/microgpt.cpp/blob/88022beee52dc0f04b7285aea65f27822a5a0e74) | 3.5s | **~115x** |
+| [Rust](https://github.com/mplekh/rust-microgpt) | 2.6s | **~157x** |
+| C++ (current) | 1.6s | **~249x** |
 
-_C++ compiled with `g++ -std=c++17 -O3`. PyPy benchmarked with [PyPy 7.3.17](https://pypy.org/download.html). Rust compilation profile:_
+_C++ (original/enhanced) compiled with `g++ -std=c++17 -O3`. C++ (current) compiled with `g++ -std=c++17 -Ofast -march=native`. PyPy benchmarked with [PyPy 7.3.17](https://pypy.org/download.html). Rust compilation profile:_
 
 ```toml
 [profile.release]
 opt-level = 3
-lto = "fat"
+lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
 ```
-
-C++ (enhanced) is the most performant but requires the most optimization effort.
 
 ### Rust
 
-The [rust implementation](https://github.com/mplekh/rust-microgpt) is already faster than [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) out of the box. The remaining gap vs C++ (enhanced) comes from bounds checking on every `Vec::push`, which the C++ version avoids through a pre-allocated arena.
+The [rust implementation](https://github.com/mplekh/rust-microgpt) is faster than [C++ (original)](https://github.com/Charbel199/microgpt.cpp/blob/3e49721ea766058cae617d7fe43092caee1198d4) out of the box. By introducing autograd optimizations, using unsafe pointers, calculating derivatives during the backward pass, and only recording operations during the forward pass, it became faster than [C++ (enhanced)](https://github.com/Charbel199/microgpt.cpp/blob/88022beee52dc0f04b7285aea65f27822a5a0e74). However, C++ (Current) builds on these optimizations and adds true fused multiply-add (FMA), computing gradients only during the backward pass, utilizing `f32`, and compiling with `-Ofast`.
 
 ---
 
 _For a version that replicates Python's random numbers for an exact match of the original Python output, see [this fork](https://github.com/AntonTimofeev/microgpt.cpp/tree/use_python_random)._
 
-_Compiling with `-Ofast` (`-O3 -ffast-math -fno-protect-parens`) showed ~4% improvement on larger networks but was within noise on smaller ones. (not worth losing strict IEEE 754 compliance)_
+
+
+
