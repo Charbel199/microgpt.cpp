@@ -20,8 +20,8 @@
 #endif
 
 std::mt19937 rng(42); //random seed
-using data_T = double;
-using grad_T = double;
+using data_T = float;
+using grad_T = float;
 
 // defining our model params
 constexpr int N_LAYER = 1;
