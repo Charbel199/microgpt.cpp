@@ -118,40 +118,111 @@ struct Arena{
 Arena arena{};// memory management for all of our values
 
 void backward(int i_loss){
-    arena.grad[i_loss] = 1;
-    for (int i = i_loss; i>=0 ; i--){
-        grad_T g = arena.grad[i];
-        if (g == 0.0f){continue;} // skip node when  grad is 0
-        int i_c0 = arena.i_child0[i];
-        int i_c1 = arena.i_child1[i];
-        if (i_c0 != NO_CHILD){
-            arena.grad[i_c0] += arena.local_grad0[i] * g;
-            if (i_c1 != NO_CHILD){
-                arena.grad[i_c1] += arena.local_grad1[i] * g;
+    std::memset(arena.grad + weights_end, 0, (i_loss + 1 - weights_end) * sizeof(grad_T));
+    arena.grad[i_loss] = 1.0f;
+
+    // cache base pointers in registers
+    data_T* __restrict__ p_data = arena.data;
+    grad_T* __restrict__ p_grad = arena.grad;
+    const int* __restrict__ p_c0 = arena.i_child0;
+    const int* __restrict__ p_c1 = arena.i_child1;
+    const int* __restrict__ p_c2 = arena.i_child2;
+    const Op* __restrict__ p_op = arena.op;
+
+    for (int i = i_loss; i >= 0; i--){
+        Op o = p_op[i];
+        if (o == OP_CONST) continue; // skip if constant
+        grad_T g = p_grad[i];
+        if (g == 0.0f) continue; // skip if grad is 0
+        int c0 = p_c0[i]; // compiler would probably do that automatically but it's okay
+        switch (o) {
+            case OP_ADD:
+                p_grad[c0] += g;
+                p_grad[p_c1[i]] += g;
+                break;
+            case OP_MUL: {
+                int c1 = p_c1[i];
+                p_grad[c0] += g * p_data[c1];
+                p_grad[c1] += g * p_data[c0];
+                break;
             }
+            case OP_DIV: {
+                int c1 = p_c1[i]; // compiler would probably do that automatically but it's okay
+                data_T d1 = p_data[c1];
+                p_grad[c0] += g / d1;
+                p_grad[c1] -= g * p_data[c0] / (d1 * d1);
+                break;
+            }
+            case OP_NEG:
+                p_grad[c0] -= g;
+                break;
+            case OP_LOG:
+                p_grad[c0] += g / p_data[c0];
+                break;
+            case OP_EXP:
+                p_grad[c0] += g * p_data[i];
+                break;
+            case OP_RELU:
+                if (p_data[c0] > 0.0f) p_grad[c0] += g;
+                break;
+            case OP_INV_SQRT:
+                p_grad[c0] -= 0.5f * g * p_data[i] / (p_data[c0] + 1e-5f);
+                break;
+            case OP_INV_LOG:
+                p_grad[c0] -= g / p_data[c0];
+                break;
+            case OP_SUB_CONST:
+                p_grad[c0] += g;
+                break;
+            case OP_MUL_CONST:
+                p_grad[c0] += g * p_data[p_c1[i]];
+                break;
+            case OP_DIV_CONST:
+                p_grad[c0] += g / p_data[p_c1[i]];
+                break;
+            case OP_FMA: {
+                // result = a*b + c -> grad[a] += g*b, grad[b] += g*a, grad[c] += g
+                int c1 = p_c1[i];
+                p_grad[c0] += g * p_data[c1];
+                p_grad[c1] += g * p_data[c0];
+                p_grad[p_c2[i]] += g;
+                break;
+            }
+            default: break;
         }
     }
 }
 
+// fused (TODO: add a push_fused_op at some point)
+inline int vmul_add(int a, int b, int c) {
+    arena.ensure();
+    int i = arena.size++;
+    arena.data[i] = arena.data[a] * arena.data[b] + arena.data[c];
+    arena.i_child0[i] = a;
+    arena.i_child1[i] = b;
+    arena.i_child2[i] = c;
+    arena.op[i] = OP_FMA;
+    return i;
+}
+
 // operations (binary)
-inline int vadd(int a, int b) { return arena.push_binary_op(arena.data[a] + arena.data[b], a, 1.0, b, 1.0); }
-inline int vsub(int a, int b) { return arena.push_binary_op(arena.data[a] - arena.data[b], a, 1.0, b, -1.0); }
-inline int vmul(int a, int b) { return arena.push_binary_op(arena.data[a] * arena.data[b], a, arena.data[b], b, arena.data[a]); }
-inline int vdiv(int a, int b) { return arena.push_binary_op(arena.data[a] / arena.data[b], a, 1.0/arena.data[b], b, -arena.data[a]/(arena.data[b]*arena.data[b])); }
+inline int vadd(int a, int b) { return arena.push_binary_op(arena.data[a] + arena.data[b], a, b, OP_ADD); }
+inline int vmul(int a, int b) { return arena.push_binary_op(arena.data[a] * arena.data[b], a, b, OP_MUL); }
+inline int vdiv(int a, int b) { return arena.push_binary_op(arena.data[a] / arena.data[b], a, b, OP_DIV); }
 
 // operations (unary)
-inline int vneg(int a) { return arena.push_unary_op(-arena.data[a], a, -1.0); }
-inline int vlog(int a) { return arena.push_unary_op(std::log(arena.data[a]), a, 1.0 / arena.data[a]); }
-inline int vexp(int a) { data_T e = std::exp(arena.data[a]); return arena.push_unary_op(e, a, e); }
-inline int vrelu(int a) { return arena.push_unary_op(std::max(0.0, arena.data[a]), a, arena.data[a] > 0 ? 1.0 : 0.0); }
-inline int vpow(int a, data_T n) { return arena.push_unary_op(std::pow(arena.data[a], n), a, n * std::pow(arena.data[a], n - 1)); }
+inline int vneg(int a) { return arena.push_unary_op(-arena.data[a], a, OP_NEG); }
+inline int vlog(int a) { return arena.push_unary_op(std::log(arena.data[a]), a, OP_LOG); }
+inline int vinv_log(int a) { return arena.push_unary_op(-std::log(arena.data[a]), a, OP_INV_LOG); }
+inline int vexp(int a) { return arena.push_unary_op(std::exp(arena.data[a]), a, OP_EXP); }
+inline int vrelu(int a) { return arena.push_unary_op(std::max(data_T{0.0}, arena.data[a]), a, OP_RELU); }
+inline int vinv_sqrt(int a) { return arena.push_unary_op(std::pow(arena.data[a] + 1e-5f, -0.5f), a, OP_INV_SQRT); }
+
 
 // operations with consts (1 node instead of 2)
-inline int mul_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] * c, a, c); }
-inline int div_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] / c, a, 1.0 / c); }
-inline int add_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] + c, a, 1.0); }
-inline int sub_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] - c, a, 1.0); }
-
+inline int mul_const(int a, data_T c) { int ic = arena.push_no_op(c); return arena.push_binary_op(arena.data[a] * c, a, ic, OP_MUL_CONST); }
+inline int div_const(int a, data_T c) { int ic = arena.push_no_op(c); return arena.push_binary_op(arena.data[a] / c, a, ic, OP_DIV_CONST); }
+inline int sub_const(int a, data_T c) { return arena.push_unary_op(arena.data[a] - c, a, OP_SUB_CONST); }
 
 struct Matrix {
     int data_start;
