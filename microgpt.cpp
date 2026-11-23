@@ -334,8 +334,6 @@ void gpt(
         int tmp[N_EMBD]; // tmp array for rmsnorm, since we can't do it in place
         for (int j=0;j< N_EMBD;j++)
             x[j] = vadd(state_dict.wte.at(token_id, j), state_dict.wpe.at(pos_id, j));
-        rmsnorm(tmp, x, N_EMBD);
-        std::memcpy(x, tmp, N_EMBD * sizeof(int));
 
         for (int i_layer=0; i_layer<N_LAYER;i_layer++){
             // save residual
